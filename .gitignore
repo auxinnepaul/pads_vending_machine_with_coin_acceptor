@@ -1,0 +1,7 @@
+build/
+*.bin
+*.elf
+*.hex
+.vscode/
+.DS_Store
+Thumbs.db
