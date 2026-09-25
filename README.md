@@ -22,7 +22,8 @@ Everything you need to bring it up, calibrate it and diagnose it is on the
 | KY-032 IR sensor | ASK Electronics | 350 |
 | Passive buzzer module | ASK Electronics | 150 |
 | LM2596 buck converter | ASK Electronics | 200 |
-| Relay module, 1 channel, active-high | ASK Electronics | 200 |
+| Relay module, 2 channel, active-high | ASK Electronics | 300 |
+| Momentary push button (jam clear, inside the door) | ASK Electronics | 50 |
 | Jumper wire | ASK Electronics | 100 |
 | 12 V 4 A adaptor | Town | ~1,000–1,500 |
 | Geared motor, target 30 rpm | Town | ~1,000–1,500 |
@@ -48,6 +49,8 @@ Everything you need to bring it up, calibrate it and diagnose it is on the
 | Relay | 26 | active HIGH, **10 kΩ pull-down to GND** |
 | IR sensor | 27 | powered from 3V3 |
 | Buzzer | 25 | passive, LEDC or `tone()` depending on core version |
+| Coin inhibit | 19 | relay 2 → HX-916 2-pin port. **10 kΩ pull-down to GND** |
+| Jam clear | 23 | momentary button to GND, `INPUT_PULLUP`, inside the locked door |
 
 Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
 
@@ -59,7 +62,20 @@ Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
    If it swings to 12 V, fit a divider or optocoupler. ESP32 pins are not 5 V
    tolerant, let alone 12 V.
 3. **Fit the 10 kΩ pull-down on GPIO 26** so the motor stays still through boot
-   and through every reset while flashing.
+   and through every reset while flashing. Fit one on **GPIO 19** too, for the
+   same reason — a floating inhibit line during boot is a live coin slot.
+
+### Wire the inhibit relay to the NC contact
+
+The second relay shorts the HX-916's 2-pin port to inhibit it. Use the
+**NC (normally closed)** contact, not NO. With NC, the contact is closed —
+acceptor inhibited — whenever this board is unpowered, booting, halted or
+crashed. A dead controller refuses money instead of eating it. `INHIBIT_CONTACT_IS_NC`
+in SECTION 4 must match how you actually wired it, and the self-test prints
+which one it thinks you used.
+
+Drive it from a **dry relay contact, never a GPIO** — on some HX-916 units
+that pin sits at 12 V.
 
 ---
 
@@ -71,8 +87,8 @@ ESP32. Ignore it — the library works.
 
 Board: **ESP32 Dev Module** (`esp32:esp32:esp32`).
 
-Verified to compile clean on **ESP32 Arduino core 2.0.11** — 300 KB flash
-(22%), 22 KB RAM. The buzzer is driven through LEDC on core 2.x and through
+Verified to compile clean on **ESP32 Arduino core 2.0.11** — 303 KB flash
+(23%), 22 KB RAM. The buzzer is driven through LEDC on core 2.x and through
 `tone()` on core 3.x, chosen automatically at compile time, so either core
 works without edits.
 
@@ -105,6 +121,7 @@ takes the command after a short pause in typing.
   b        buzzer test
 
   x        clear a latched fault
+           (or hold the front-panel button for 1 s)
   r        zero the session counters
   h        toggle the heartbeat line
 ```
@@ -117,7 +134,7 @@ CONFIG sections at the top of the `.ino` and reflash.
 
 ## Boot self-test
 
-Every boot runs a seven-part self-test and prints it. Run it again any time
+Every boot runs an eight-part self-test and prints it. Run it again any time
 with `d`.
 
 | # | Checks | Fails the boot if |
@@ -126,13 +143,21 @@ with `d`.
 | 2 | Coin table, price, change policy | table empty, 0-pulse entry, duplicate pulse counts |
 | 3 | Pulse timing, coin line at rest | coin gap too close to the debounce |
 | 4 | I2C scan, LCD present | — (runs headless instead) |
-| 5 | IR polarity, chute clear at rest | — (warns loudly) |
+| 5 | IR polarity, chute clear at rest | **chute blocked at startup** |
 | 6 | Relay pin, timeouts | — |
-| 7 | Buzzer chirp | — |
+| 7 | Inhibit contact type, clear button at rest | — (warns if wired NO) |
+| 8 | Buzzer chirp | — |
 
 A **fatal** result halts before `attachInterrupt`, so a machine that would
-mis-price coins never counts one. The console stays alive so you can find out
-why. `HALT_ON_SELFTEST_FAIL` in SECTION 7 turns that off.
+mis-price coins never counts one, and the acceptor stays inhibited. The console
+stays alive so you can find out why. `HALT_ON_SELFTEST_FAIL` in SECTION 7 turns
+that off.
+
+Because a blocked chute is fatal, a power cut with one pad stuck will halt the
+machine on the way back up. That is deliberate — the next vend would have
+faulted anyway. Recovery is the clear button, and clearing from a halted boot
+**re-runs the whole self-test** and refuses to return the machine to service
+until it passes. Only then is the coin interrupt attached.
 
 Two reset reasons are worth watching for on this machine specifically:
 
@@ -155,10 +180,12 @@ coins, a different pulse count per coin type. Then deliberately try to defeat
 it with KSh 1, KSh 5, KSh 10, old-series coins and a 26 mm hardware washer.
 That test is half the reason this machine exists.
 
-**3. Drop a real coin and read the console.** Every coin prints five lines:
+**3. Drop a real coin and read the console.** Every coin reports itself in
+full:
 
 ```
-COIN IN      : 2 pulses
+COIN IN      : 20 pulses
+PULSE TIMING : 1880 ms burst, gaps 94-99 ms
 RECOGNISED   : KSH 20  (worth KSH 20)
 CREDIT NOW   : KSH 20 of KSH 20
 MEANING      : price met
@@ -172,6 +199,12 @@ what you saw, then reflash.
 
 If one coin reads as several, the gap is too short — raise it with `g350` until
 it reads right, then write it into SECTION 5.
+
+**3b. Check the pulse timing.** The `PULSE TIMING` line on every coin gives the
+burst length and the min/max gap between pulses. Drop one of each coin and note
+the widest gap you see — that is your margin against a coin splitting in two.
+Then insert two coins as fast as the acceptor will take them and confirm they
+still read as two.
 
 **4. IR sensor,** motor disconnected. Type `i` and wave a pad through the
 chute. If `BLOCKED` and `clear` are the wrong way round, flip
@@ -220,10 +253,31 @@ what each channel is worth:
 ```c
 const CoinDef COIN_TABLE[] = {
   //  pulses   value   name
-  {      1,      10,   "KSH 10"  },
-  {      2,      20,   "KSH 20"  },
+  {      2,       5,   "KSH 5"   },
+  {     10,      10,   "KSH 10"  },
+  {     20,      20,   "KSH 20"  },
+  {     40,      40,   "KSH 40"  },
 };
 ```
+
+These are the counts **measured on the bench** from this acceptor, not
+defaults. At `PAD_PRICE = 20` with change kept on the meter they give the
+client exactly what was agreed: four KSh 5, or two KSh 10, or one KSh 20 buys
+one pad; one KSh 40 buys two, one after the other.
+
+Every coin also reports its own pulse timing, which is what tells you whether
+`COIN_GAP_MS` is safe:
+
+```
+COIN IN      : 40 pulses
+PULSE TIMING : 3840 ms burst, gaps 92-104 ms
+```
+
+The gap has to sit in a window with a wall on each side. Too **low** and one
+coin splits into two — the customer is short-changed. Too **high** and two
+coins inserted quickly merge into one unknown coin and the money is lost. The
+acceptor cannot deliver two coins closer than about 600 ms, so keep it well
+under that. The firmware warns on the console if either margin gets thin.
 
 Pulse counts must be unique — the self-test refuses to boot a table with
 duplicates, because two coins on one channel is money you cannot account for.
@@ -262,9 +316,20 @@ the customer did not cause.
 stays on the meter and buys the next pad, which is what
 `KEEP_CHANGE_AS_CREDIT` controls.
 
-**Faults latch.** The machine stops and reports rather than reversing or
-retrying — the relay drives one direction only, which is a deliberate decision
-agreed with the client. Power-cycle, or type `x`.
+**Faults latch, and stop taking money.** On any fault the second relay
+inhibits the coin acceptor, so a jammed or empty machine physically refuses
+coins instead of eating them. The LCD rotates `OUT OF ORDER` over the reason,
+`NO COINS TAKEN`, and `HOLD RESET BTN`.
+
+**To clear:** hold the button inside the locked door for 1 second, or type `x`.
+Either route re-checks the beam first and **refuses to clear while the chute is
+still blocked** — clearing with a pad still wedged would just fault again on
+the next coin, after taking the money. A fault that arrives while the button is
+already held cannot ride that hold into clearing itself; it has to be released
+and pressed fresh.
+
+The acceptor is also inhibited for the duration of every vend, so a coin cannot
+arrive mid-dispense.
 
 **A hard motor limit** is checked every pass of the loop, in every state,
 independently of the state machine. Even a firmware bug cannot leave the coil
@@ -290,12 +355,10 @@ Stated here so nothing is claimed that has not been demonstrated.
   3–4 week battery figure in the client study is still arithmetic, not a
   measurement.
 - **One pad product.** The coil is wound to one pitch.
-- **A faulted machine still swallows coins.** The acceptor is wired permanently
-  to 12 V, so once the machine latches `OUT OF ORDER` it keeps taking coins
-  mechanically. Firmware logs them and refuses to bank them — it never owes a
-  pad it cannot deliver — but it cannot hand the money back. Cutting power to
-  the acceptor needs the high-side switch (MOSFET or relay) from the full
-  design, which was dropped from this build. Tape the slot if the demo faults.
+- **A coin already in the slot when a fault hits is still lost.** The inhibit
+  relay stops the *next* coin, not one that is already being read. Firmware
+  logs it and refuses to bank it, so the machine never owes a pad it cannot
+  deliver, but it has no way to hand the money back.
 - **95% coin recognition** is the acceptor's rating. Roughly one good coin in
   twenty is refused and must be re-inserted. Expect it at the demo; it is not
   a fault.
