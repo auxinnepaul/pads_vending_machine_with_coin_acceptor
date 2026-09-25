@@ -267,9 +267,10 @@ everything. And **every typed command still answers in full**: plug a laptop in,
 press `s`, and you get the complete status whatever the switch is set to. `L`
 turns the running commentary back on for as long as you want it.
 
-**Console changes are not saved.** Nothing in this build writes to flash. The
-console is for finding the right number; once you have it, write it into the
-CONFIG sections at the top of the `.ino` and reflash.
+**Console changes are not saved.** The console is for finding the right number;
+once you have it, write it into the CONFIG sections at the top of the `.ino`
+and reflash. The **meter balance** is the one and only thing this firmware
+keeps in flash — see "Surviving a power cut" below.
 
 ---
 
@@ -506,6 +507,45 @@ friend, or give up honestly. Twenty seconds, which this used to be, was not.
 The countdown repaints **line 2 only**, without clearing the screen, so a
 once-a-second refresh does not flicker.
 
+### Surviving a power cut
+
+Somebody puts KSh 5 into a KSh 20 machine and the mains drops. Without
+protection that is a **clean swallow**: the coin is in the box, the firmware
+forgets it ever arrived, and nobody — not the customer, not the log, not the
+takings — has any record of it. Mains cuts are not hypothetical at a Kenyan
+site.
+
+So the meter balance is written to flash whenever it changes, and restored at
+boot:
+
+```
+RECOVERED KSH 5 left on the meter when the power went.
+  Part payment. The countdown restarts now, so it expires 120 s
+  from this boot rather than sitting here indefinitely.
+```
+
+**The countdown restarts from boot rather than resuming.** That is the detail
+that makes this safe. A short cut protects the customer who is still standing
+there. A long one must not leave a stranger's balance on the screen all night
+for whoever opens up in the morning — so a restored balance expires
+`CREDIT_TIMEOUT_MS` after the power returns, and then the machine is clean.
+
+If the restored balance already covers a whole pad, the machine vends it on
+boot. That is a pad already paid for.
+
+Turn it off with `REMEMBER_CREDIT_ACROSS_POWER_LOSS` in SECTION 3.
+
+**What it costs.** Three small writes per sale at most, and only when the value
+actually changes — `putUShort()` compares before writing. NVS is wear-levelled
+and rated in the tens of thousands of cycles per sector, so at fifty sales a
+day this is years of life. Not free, but cheap against the alternative.
+
+**What it does not fix.** It restores the *claim*, not the cash. Nothing can
+return the coin. And there is a window of a few milliseconds between a pad
+being delivered and the new balance reaching flash — a cut in exactly that gap
+means the machine vends one extra pad on boot. That errs toward the customer,
+which is the right direction to err.
+
 ### The customer pays on delivery
 
 **Nothing comes off the meter until the beam confirms a pad actually fell.**
@@ -623,9 +663,10 @@ refund with — but they are reported rather than pocketed in silence.
 
 Stated here so nothing is claimed that has not been demonstrated.
 
-- **Nothing is saved.** No NVS, no flash writes. Vend count, takings and fault
-  count are session-only and reset on power-up. Deliberate for a bench
-  prototype; persistence belongs with the cabinet build, not before it.
+- **Only the meter balance survives a reboot.** Vend count, takings and fault
+  count are session-only and reset on power-up. That is deliberate for a bench
+  prototype — a proper vend log belongs with the cabinet build. The balance is
+  the exception because losing it silently swallows a customer's money.
 - **No speed control.** The relay has no PWM. Dispensing speed is fixed by the
   motor you buy and can only be changed by changing the motor.
 - **No reverse**, so no automatic jam recovery.

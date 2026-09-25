@@ -82,6 +82,60 @@
       LOOP                the main cycle, and why its order matters
 
   ---------------------------------------------------------------------------
+  HOW THIS MACHINE HANDLES MONEY, AND WHY
+  ---------------------------------------------------------------------------
+  Read this before changing anything that touches `credit`. Every rule below
+  exists because of one physical fact:
+
+      THE COIN IS IN THE CASH BOX BEFORE THIS FIRMWARE KNOWS IT EXISTS.
+
+  The acceptor banks a coin and only then sends its pulses. There is no eject,
+  no return chute and no hopper anywhere in this machine. Nothing here can give
+  anybody their money back — not a fault handler, not a timeout, not a reboot.
+
+  So the firmware cannot protect the cash. What it protects instead is THE
+  CLAIM: its own record that it owes somebody a pad. Five rules follow from
+  that, and each one is a deliberate answer to "who loses if this goes wrong".
+
+   1. PAY ON DELIVERY, NOT ON MOTOR START.
+      Credit comes off the meter at the moment the beam confirms a pad fell,
+      and nowhere else. A jam, an empty coil or a missed beam therefore costs
+      the customer nothing — the claim is still on the meter and is honoured
+      as soon as the machine can serve it. Charging at motor start would have
+      meant taking money for a pad that never came out.
+      -> ST_DISPENSING, the one line that calls setCredit() on delivery.
+
+   2. A COIN THAT LANDS MID-VEND IS BANKED, NOT DISCARDED.
+      Inhibiting the acceptor stops the NEXT coin; one already rolling through
+      the mechanism still completes. Those states end in IDLE within a second
+      or two, so the machine CAN honour it — it buys the next pad. Throwing it
+      away would mean keeping the money and giving nothing back.
+      EMPTY and FAULT still refuse, because there the machine genuinely cannot
+      deliver and must not take the claim on.
+
+   3. A FULL PAD'S WORTH OF CREDIT IS NEVER TIMED OUT.
+      Part payment expires (rule 4). Credit that already covers a pad does not,
+      in any state, because that is a debt the machine has already been paid
+      for. It waits — through IDLE, through EMPTY, through a refill.
+
+   4. PART PAYMENT EXPIRES, AND THAT IS A POLICY CHOICE, NOT A DEFAULT.
+      No setting returns the money, so all CREDIT_TIMEOUT_MS decides is whether
+      abandoned part-payment stays with the business or eventually buys a pad
+      for whoever walks up next. Two minutes, with a countdown on the screen so
+      she knows how long she has. Set it to 0 to wait forever.
+
+   5. THE METER SURVIVES A POWER CUT.
+      Without this, a cut with KSh 5 on the meter is a clean swallow: coin in
+      the box, no record anywhere. The balance is the only thing this firmware
+      writes to flash. The countdown restarts from boot rather than resuming,
+      so a short cut protects the customer still standing there and a long one
+      does not leave a stranger's balance up all night.
+
+  Two places the money still goes nowhere, stated so nobody thinks otherwise:
+  a coin already mid-flight when the machine faults or runs out, and part
+  payment that nobody comes back for. Both are logged, never silent.
+
+  ---------------------------------------------------------------------------
   THE FIVE STATES
   ---------------------------------------------------------------------------
     IDLE        Waiting for money. Coins accepted.
@@ -109,6 +163,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <esp_system.h>
+#include <Preferences.h>
 
 #define FW_VERSION "2.0"
 
@@ -236,6 +291,35 @@ uint16_t PAD_PRICE = 20;
 //           the bench. Do not ship it this way.
 //
 const bool KEEP_CHANGE_AS_CREDIT = true;
+
+// --- SURVIVING A POWER CUT --------------------------------------------------
+//
+//  true  = the amount on the meter is written to flash whenever it changes, so
+//          a power cut does not swallow part payment. Somebody who has put in
+//          KSh 5 of KSh 20 when the power goes still has her KSh 5 when it
+//          comes back.
+//  false = nothing is written to flash at all. A power cut with money on the
+//          meter loses it silently.
+//
+//  WHY THIS IS WORTH THE FLASH WRITES. Without it, a cut at the wrong moment
+//  is a clean swallow: the coin is in the box, the firmware forgets it ever
+//  arrived, and nobody — not the customer, not the log, not the takings — has
+//  any record. That is the one failure this machine should never have, and
+//  mains cuts are not hypothetical at a Kenyan site.
+//
+//  WHAT IT DOES NOT FIX. It restores the CLAIM, not the cash; nothing can
+//  return the coin. And if the outage is long, the person who comes back to it
+//  is not the person who paid. That is bounded on purpose: the countdown
+//  restarts from boot, so a restored balance expires CREDIT_TIMEOUT_MS after
+//  the power returns rather than sitting on the screen all night. A short cut
+//  protects the customer standing there; a long one does not leave a standing
+//  balance for a stranger.
+//
+//  COST. Three small writes per sale at most, and only when the value actually
+//  changes. NVS is wear-levelled and rated in the tens of thousands of cycles
+//  per sector, so at fifty sales a day this is years of life, not months. It
+//  is not free, and it is the only thing this firmware writes to flash.
+const bool REMEMBER_CREDIT_ACROSS_POWER_LOSS = true;
 
 // ===========================================================================
 //  SECTION 4 — SENSOR AND RELAY POLARITY
@@ -714,6 +798,8 @@ volatile uint32_t isrBurstStartMs = 0;
 // acceptor takes money the firmware cannot count.
 bool coinIsrAttached = false;
 
+Preferences prefs; // opened once in setup(), holds only the meter balance
+
 uint16_t credit = 0; // shillings on the meter
 uint32_t lastCoinMs = 0;
 uint32_t creditTickMs = 0; // next countdown repaint, see ST_IDLE
@@ -732,7 +818,8 @@ bool irWatch = false; // console command  i
 bool motorRunning = false;
 uint32_t motorOnSince = 0;
 
-// Counters. RAM only — nothing is written to flash in this build.
+// Counters. RAM only, and reset on every boot. The meter balance is the
+// only thing that survives a power cut — see setCredit().
 uint32_t vendCount = 0;
 uint32_t coinsAccepted = 0;
 uint32_t coinsUnknown = 0;
@@ -888,6 +975,21 @@ bool takeCoin(CoinBurst &b)
 //  bug and the console says so.
 const uint16_t MAX_CREDIT = 10000;
 
+// THE ONLY PLACE THE METER IS EVER WRITTEN.
+//
+//  Everything that moves money goes through here so the stored copy can never
+//  drift from the live one. There is no way to change credit somewhere else
+//  and forget to persist it, because nothing else assigns to it.
+//
+//  putUShort() compares before it writes, so setting the same value again
+//  costs nothing and does not touch the flash.
+void setCredit(uint16_t value)
+{
+  credit = value;
+  if (REMEMBER_CREDIT_ACROSS_POWER_LOSS)
+    prefs.putUShort("credit", value);
+}
+
 // The only place money is added to the meter. Returns false if it refused.
 bool bankCoin(const CoinDef *coin)
 {
@@ -898,7 +1000,7 @@ bool bankCoin(const CoinDef *coin)
     LOGLN(F("!! firmware bug, not a coin problem. Report it."));
     return false;
   }
-  credit += coin->value;
+  setCredit(credit + coin->value);
   shillingsIn += coin->value;
   coinsAccepted++;
   lastCoinMs = millis();
@@ -1343,7 +1445,7 @@ void attemptClear(const char *who)
     LOG(credit);
     LOGLN(F(" of credit that was on the meter."));
   }
-  credit = 0;
+  setCredit(0);
 
   // Clearing a jam on an empty coil must not flick the machine into service
   // for the one pass it takes the stock check to notice — that is an audible
@@ -1862,6 +1964,19 @@ bool selfTest(bool verbose)
       LOGLN(F("  switch is open, miswired, or PADS_PRESENT_IS_LOW is"));
       LOGLN(F("  inverted. Use  k  to watch it while you work the lever."));
     }
+  }
+
+  LOGLN(F("[8b] STORED BALANCE"));
+  if (!REMEMBER_CREDIT_ACROSS_POWER_LOSS)
+  {
+    LOGLN(F("  OFF — nothing is written to flash. A power cut with money on"));
+    LOGLN(F("  the meter loses it silently. See SECTION 3."));
+  }
+  else
+  {
+    LOG(F("  on. Meter balance in flash: KSH "));
+    LOGLN(prefs.getUShort("credit", 0));
+    LOGLN(F("  This is the only thing this firmware stores."));
   }
 
   // --- 9. Buzzer ---
@@ -2460,7 +2575,8 @@ void setup()
   LOGLN(F("  BRICAPA PAD DISPENSER  -  prototype firmware v" FW_VERSION));
   LOGLN(F("  Ref BT-PADVEND-2026-001"));
   rule();
-  LOGLN(F("  Type ? for commands. Nothing is saved to flash."));
+  LOGLN(F("  Type ? for commands. Console changes are not saved; the"));
+  LOGLN(F("  meter balance is the only thing kept through a power cut."));
   rule();
 
   pinMode(PIN_COIN, INPUT_PULLUP);
@@ -2479,6 +2595,9 @@ void setup()
   }
 
   buzzerInit();
+
+  // The meter balance is the only thing this firmware keeps in flash.
+  prefs.begin("padvend", false);
 
   Wire.begin(PIN_SDA, PIN_SCL);
   // 100 kHz, stated rather than inherited. This is the slowest standard I2C
@@ -2509,6 +2628,37 @@ void setup()
 
   say("PAD DISPENSER", "BRICAPA  v" FW_VERSION);
   holdFor(1200);
+
+  // ---- Restore a balance left on the meter by a power cut ----
+  //
+  //  The countdown deliberately restarts from here rather than resuming where
+  //  it left off. A short cut protects the customer who is still standing
+  //  there; a long one must not leave a stranger's balance on the screen all
+  //  night for whoever opens up in the morning.
+  if (REMEMBER_CREDIT_ACROSS_POWER_LOSS)
+  {
+    uint16_t saved = prefs.getUShort("credit", 0);
+    if (saved > 0)
+    {
+      credit = saved; // not setCredit(): the stored value is already this
+      lastCoinMs = millis();
+      creditTickMs = 0;
+      rule();
+      LOG(F("RECOVERED KSH "));
+      LOG(credit);
+      LOGLN(F(" left on the meter when the power went."));
+      if (credit >= PAD_PRICE)
+        LOGLN(F("  That is a full pad, already paid for. Vending it now."));
+      else
+      {
+        LOG(F("  Part payment. The countdown restarts now, so it expires "));
+        LOG(CREDIT_TIMEOUT_MS / 1000);
+        LOGLN(F(" s"));
+        LOGLN(F("  from this boot rather than sitting here indefinitely."));
+      }
+      rule();
+    }
+  }
 
   attachCoinIsr();
 
@@ -2743,7 +2893,7 @@ void loop()
         LOGLN(F(" s, cleared."));
         LOGLN(F("  Nobody came back for it. The coin is in the box and there"));
         LOGLN(F("  is no way to return it — see CREDIT_TIMEOUT_MS."));
-        credit = 0;
+        setCredit(0);
         showIdle();
       }
     }
@@ -2780,7 +2930,17 @@ void loop()
       // that went negative would wrap to about 65000 shillings of credit and
       // hand out free pads until someone noticed.
       uint16_t charged = (credit >= PAD_PRICE) ? PAD_PRICE : credit;
-      credit = KEEP_CHANGE_AS_CREDIT ? (credit - charged) : 0;
+      setCredit(KEEP_CHANGE_AS_CREDIT ? (credit - charged) : 0);
+
+      // KNOWN RACE, ACCEPTED DELIBERATELY. There are a few milliseconds
+      // between the pad landing and the new balance reaching flash. A power
+      // cut in exactly that gap leaves the OLD balance stored, so the machine
+      // boots owing a pad it has already delivered and vends one more.
+      //
+      // The alternative is writing flash BEFORE confirming delivery, which
+      // reopens the far worse failure this ordering exists to close: taking
+      // money for a pad that never came out. Given a choice of which way to
+      // be wrong in a window of milliseconds, err toward the customer.
 
       vendCount++;
       say("TAKE YOUR PAD", credit > 0 ? "CREDIT REMAINS" : "");
@@ -2877,7 +3037,7 @@ void loop()
       LOG(F("Part payment of KSH "));
       LOG(credit);
       LOGLN(F(" timed out while out of stock, cleared."));
-      credit = 0;
+      setCredit(0);
     }
     // The screen is the only thing standing between a customer and a locked
     // door, so say all three things in turn: that it is empty, that she is not
