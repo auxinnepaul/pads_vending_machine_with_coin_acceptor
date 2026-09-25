@@ -26,9 +26,12 @@
   at "No line ending" the console still works — it takes a command after a
   short pause in typing.
 
-  Nothing is stored in flash. Anything you change over the console is lost on
-  reset, and that is on purpose: the console is for finding the right number,
-  then you write that number into CONFIG below and flash it.
+  ONE thing is stored in flash: the amount on the meter, so a power cut does
+  not swallow part payment. See SECTION 3, REMEMBER_CREDIT_ACROSS_POWER_LOSS.
+
+  Nothing else is. Every console setting, and every counter — vends, takings,
+  faults — is lost on reset, and that is on purpose: the console is for finding
+  the right number, then you write that number into CONFIG below and flash it.
 
   ---------------------------------------------------------------------------
   WIRING
@@ -2063,8 +2066,10 @@ bool selfTest(bool verbose)
 //
 //  Two behaviours worth knowing:
 //
-//    Nothing typed here is saved. There is no flash storage in this build, by
-//    design. The console is for FINDING the number; SECTION 5 is where it
+//    Nothing typed here is saved. The meter balance is the only thing this
+//    firmware keeps in flash, and no console command writes to it. So every
+//    timing, price and policy you set from here is gone on the next reset, by
+//    design: the console is for FINDING the number; SECTION 5 is where it
 //    lives once you have it.
 //
 //    A typed command always answers in full, even on a machine installed with
