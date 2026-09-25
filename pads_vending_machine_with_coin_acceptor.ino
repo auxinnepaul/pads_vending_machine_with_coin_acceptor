@@ -1252,10 +1252,18 @@ void attemptClear(const char *who)
   }
 
   motorOff();
-  credit = 0;
   LOG(F("Fault cleared by "));
   LOGLN(who);
-  LOGLN(F("Credit zeroed."));
+  if (credit > 0)
+  {
+    // Worth stating out loud. By the time somebody unlocks the door the
+    // customer is long gone, so carrying this forward would just hand the next
+    // person a free pad. It is cleared on purpose, not lost by accident.
+    LOG(F("Clearing KSH "));
+    LOG(credit);
+    LOGLN(F(" of credit that was on the meter."));
+  }
+  credit = 0;
 
   // Clearing a jam on an empty coil must not flick the machine into service
   // for the one pass it takes the stock check to notice — that is an audible
@@ -2581,15 +2589,19 @@ void loop()
       showIdle();
     }
 
-    // Take the money only once the motor is actually turning. If the beam
-    // check refuses, the credit stays on the meter rather than vanishing
-    // into a fault the customer did not cause.
+    // THE CUSTOMER PAYS ON DELIVERY, NOT ON THE MOTOR STARTING.
+    //
+    //  Nothing is taken off the meter here. The money comes off in
+    //  ST_DISPENSING, at the moment the beam confirms a pad actually fell.
+    //
+    //  This machine cannot give change and cannot give refunds — there is no
+    //  hopper and nothing to pay out with. So the only way it can be honest
+    //  about a vend that fails is to never have taken the money in the first
+    //  place. Charge on delivery and a jam, an empty coil or a missed beam
+    //  all leave the credit sitting on the meter where the customer can see
+    //  it, instead of quietly consuming it for a pad that never arrived.
     if (credit >= PAD_PRICE)
-    {
-      uint16_t after = KEEP_CHANGE_AS_CREDIT ? (credit - PAD_PRICE) : 0;
-      if (startVend("credit met"))
-        credit = after;
-    }
+      startVend("credit met");
     break;
   }
 
@@ -2600,6 +2612,17 @@ void loop()
     {
       motorOff();
       uint32_t took = millis() - dispenseStartMs;
+
+      // Delivered. NOW take the money — this is the only line in the firmware
+      // that spends a customer's credit.
+      //
+      // The >= guard is not decoration: PAD_PRICE can be changed from the
+      // console with  p  while a vend is in flight, and an unsigned subtraction
+      // that went negative would wrap to about 65000 shillings of credit and
+      // hand out free pads until someone noticed.
+      uint16_t charged = (credit >= PAD_PRICE) ? PAD_PRICE : credit;
+      credit = KEEP_CHANGE_AS_CREDIT ? (credit - charged) : 0;
+
       vendCount++;
       say("TAKE YOUR PAD", credit > 0 ? "CREDIT REMAINS" : "");
       beep(TONE_VEND_HZ, TONE_VEND_MS);
@@ -2611,6 +2634,8 @@ void loop()
       LOGLN(F(" ms"));
       LOG(F("  session vends : "));
       LOGLN(vendCount);
+      LOG(F("  charged       : KSH "));
+      LOGLN(charged);
       LOG(F("  credit left   : KSH "));
       LOGLN(credit);
       if (took < 150)
@@ -2626,7 +2651,12 @@ void loop()
       LOG(F("No pad in "));
       LOG(DISPENSE_TIMEOUT_MS);
       LOGLN(F(" ms."));
-      LOGLN(F("  The customer has paid for this pad and has not got it."));
+      if (credit > 0)
+      {
+        LOG(F("  KSH "));
+        LOG(credit);
+        LOGLN(F(" is still on the meter — NOT taken for this attempt."));
+      }
 
       // The stock switch can tell the two causes apart, and they want
       // opposite handling: running dry is routine and has to come back on its

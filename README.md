@@ -89,6 +89,24 @@ entirely. Set it true once the switch is actually wired — until then an unwire
 pin floats HIGH, reads EMPTY, and the machine would sit refusing to vend while
 you wonder why. The self-test says which mode it is in on every boot.
 
+**Be clear about what this switch does and does not buy you:**
+
+- **With `PAD_SWITCH_FITTED` false there is no empty detection at all.** The
+  machine cannot know it has run out. That is the shipped configuration, and
+  every claim about out-of-stock behaviour below depends on you turning it on.
+- **Even switched on, it is not instant.** The reading is debounced for
+  `PAD_SWITCH_DEBOUNCE_MS` (400 ms) because a mechanical switch under a
+  settling stack of pads chatters badly. There is a window of a few hundred
+  milliseconds after the coil empties where the machine still believes it has
+  stock and will still take a coin.
+- **What saves that customer is pay-on-delivery, not the switch.** A coin taken
+  in that window starts a vend, the vend times out with nothing to give, and
+  the credit is never taken — so the money is still on the meter, and the
+  refill that follows dispenses the pad it is owed. The switch narrows the
+  window; the payment model is what makes the window survivable.
+- **Stock is a switch, not a count.** It knows "empty" or "not empty", never
+  "four left".
+
 ### Wire the inhibit relay to the NC contact
 
 The second relay shorts the HX-916's 2-pin port to inhibit it. Use the
@@ -445,9 +463,30 @@ IDLE ──coin──► decode pulses ──unknown──► reject tone, logge
 IDLE also drops to **EMPTY** the moment the stock switch opens, and climbs
 back out on its own when it closes.
 
-**The money is taken only once the motor is actually turning.** If the beam
-check refuses, the credit stays on the meter rather than vanishing into a fault
-the customer did not cause.
+### The customer pays on delivery
+
+**Nothing comes off the meter until the beam confirms a pad actually fell.**
+The motor starting does not cost anything; only the pad landing does.
+
+This matters because the machine **cannot refund**. There is no hopper and
+nothing to pay out with. So the only way it can be honest about a vend that
+fails is to never have taken the money in the first place. Charge on delivery
+and a jam, an empty coil, a mis-aimed sensor or a missed beam all leave the
+credit sitting on the meter where the customer can still see it — and where it
+buys a pad as soon as the machine is working again.
+
+There is exactly one line in the firmware that spends credit, and it runs after
+the beam has confirmed delivery.
+
+Two consequences worth knowing:
+
+- **A failed vend costs nobody anything.** The machine goes to FAULT or EMPTY
+  with the credit intact. If it went to EMPTY, a refill puts it straight back
+  in service and that credit buys the pad it was owed.
+- **Clearing a fault does wipe the credit**, on purpose. By the time somebody
+  unlocks the door the customer is long gone, and carrying it forward would
+  just hand the next person a free pad. The console prints the amount it is
+  clearing so it is a decision, not an accident.
 
 **No change is given** — there is no hopper and no second motor. Overpayment
 stays on the meter and buys the next pad, which is what
