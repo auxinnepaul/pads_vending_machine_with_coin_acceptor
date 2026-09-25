@@ -53,6 +53,57 @@
        go through a divider or optocoupler — it will destroy a GPIO directly.
     3. Fit the 10k pull-down on GPIO 26 so the motor stays still through boot
        and through every reset while you are flashing.
+
+  ---------------------------------------------------------------------------
+  MAP OF THIS FILE — what lives where
+  ---------------------------------------------------------------------------
+  Everything you need to change to commission a machine is in CONFIG, in nine
+  numbered sections. Below the END OF CONFIG banner is machinery you should be
+  able to read but rarely need to touch.
+
+    CONFIG
+      SECTION 1   PIN MAP            which GPIO does what
+      SECTION 2   COIN TABLE         pulses -> shillings, per coin
+      SECTION 3   PRICE AND CHANGE   what a pad costs, what happens to change
+      SECTION 4   POLARITY           IR, relays, stock switch, LCD address
+      SECTION 5   TIMING             every delay and timeout, explained
+      SECTION 6   SOUND              buzzer tones
+      SECTION 7   CONSOLE / FIELD    logging switch, self-test behaviour
+
+    MACHINERY
+      STATE               the five states and what each one means
+      ISR                 counting coin pulses without missing any
+      HARDWARE HELPERS    motor, inhibit relay, buzzer, LCD, sensors
+      FAULT / EMPTY       how the machine goes out of service and comes back
+      SERIAL REPORTING    the per-coin report
+      SELF-TEST           the nine checks run at every boot
+      SERIAL CONSOLE      the commands, and what each one is for
+      SETUP               boot order, and why it is that order
+      LOOP                the main cycle, and why its order matters
+
+  ---------------------------------------------------------------------------
+  THE FIVE STATES
+  ---------------------------------------------------------------------------
+    IDLE        Waiting for money. Coins accepted.
+    DISPENSING  Motor turning, watching the beam. Coins refused.
+    DELIVERED   Pad fell, "TAKE YOUR PAD" on screen. Coins refused.
+    EMPTY       Stock switch says no pads. Coins refused. NOT a fault: it
+                comes back on its own the moment the coil is refilled.
+    FAULT       Something is wrong that needs a person. Coins refused.
+                Latched until the clear button is held, or  x  is typed.
+
+  ---------------------------------------------------------------------------
+  THE FOUR TIMINGS YOU WILL ACTUALLY TUNE
+  ---------------------------------------------------------------------------
+    DISPENSE_TIMEOUT_MS   how long to wait for a pad before deciding that
+                          nothing dropped.  <- the one you asked about
+    COIN_GAP_MS           how long a silence means "that coin is finished"
+    CREDIT_TIMEOUT_MS     how long part-payment sits before it is forgotten
+    MESSAGE_HOLD_MS       how long "TAKE YOUR PAD" stays on the screen
+
+  The first three can be changed live from the console, so you can find the
+  right number without reflashing, then write it into SECTION 5. See the
+  detailed notes on each one there.
 */
 
 #include <Wire.h>
@@ -99,6 +150,26 @@ bool logOn = true;     // momentary gate, see above
 // ===========================================================================
 //  SECTION 1 — PIN MAP
 // ===========================================================================
+//
+//  These are not arbitrary. On an ESP32 most pins have a second job and only
+//  some are safe for general use:
+//
+//    0, 2, 5, 12, 15   strapping pins. The chip reads them at boot to decide
+//                      how to start. Pull one the wrong way and the board will
+//                      not boot, or will boot into the wrong mode.
+//    1, 3              the USB serial port. Using them kills the console.
+//    6 - 11            wired to the flash chip. Touching them bricks the run.
+//    34 - 39           INPUT ONLY, and with NO internal pull-up. Fine for an
+//                      analogue sensor, useless for a switch to GND — which is
+//                      why the stock switch is on 33 and not 34.
+//
+//  Everything below is outside all of that. If you move a pin, check it
+//  against this list first.
+//
+//  Three of these need an external resistor. See the header block at the top
+//  of this file — a floating pin during the boot window is a motor that twitches
+//  and a coin slot that is live.
+//
 const uint8_t PIN_COIN = 18;
 const uint8_t PIN_RELAY = 26;
 const uint8_t PIN_IR = 27;
@@ -236,54 +307,245 @@ const uint32_t FAULT_ROTATE_MS = 2000;   // LCD line 2 rotation
 // ===========================================================================
 //  SECTION 5 — TIMING
 // ===========================================================================
-//  The three marked LIVE can be changed from the console while the machine is
-//  running, so you can find the right value without a reflash. Write what you
-//  find back into this section afterwards.
+//
+//  Every delay and timeout in the machine, in one place.
+//
+//  Each one is written up the same way:
+//
+//    WHAT        what the number actually controls
+//    TOO SHORT   what goes wrong if you set it too low
+//    TOO LONG    what goes wrong if you set it too high
+//    HOW TO SET  how to find the right value on the bench
+//    CONSOLE     the live command, if it has one
+//
+//  Three can be changed from the console while the machine is running, so you
+//  can hunt for the right number without reflashing every time. Those changes
+//  are NOT saved — once you have the number, write it in here and flash it.
+//
+//  Quick index:
+//    COIN_PULSE_DEBOUNCE_MS   noise filter on each individual coin pulse
+//    COIN_GAP_MS              silence that means "that coin is finished"   [g]
+//    DISPENSE_TIMEOUT_MS      give up waiting for the pad to drop          [o]
+//    CREDIT_TIMEOUT_MS        forget part-payment nobody came back for
+//    IR_DEBOUNCE_MS           noise filter on the drop beam
+//    IR_SETTLE_MS             prove the chute is clear before starting
+//    MESSAGE_HOLD_MS          how long "TAKE YOUR PAD" stays up
+//    MOTOR_LIMIT_MARGIN_MS    the backstop that can never be reached normally
+//    PAD_SWITCH_DEBOUNCE_MS   noise filter on the stock switch
+//    IR_STUCK_WARN_MS         nag about something sitting in the chute
+//
 
-// Shortest gap between two pulses that we will believe. Must be WELL below the
-// acceptor's own pulse period, or you will merge pulses and misread coins.
-// Most acceptors run 40-100 ms between pulses, so 20 ms is a safe floor.
+// ---------------------------------------------------------------------------
+//  COIN_PULSE_DEBOUNCE_MS — noise filter on each individual coin pulse
+// ---------------------------------------------------------------------------
+//  WHAT        The acceptor's output can ring on each edge. Two edges closer
+//              together than this are treated as one pulse. This is NOT the
+//              gap between coins — that is COIN_GAP_MS below.
+//  TOO SHORT   Ringing gets counted as extra pulses. A KSh 20 coin (20 pulses)
+//              reads as 23, matches nothing in the table, and the customer's
+//              money is taken for a coin the machine cannot price.
+//  TOO LONG    Real pulses get swallowed. The same coin reads LOW, maybe 14
+//              pulses, which again matches nothing — or worse, matches a
+//              CHEAPER coin and short-changes the customer.
+//  HOW TO SET  Leave it at 20 unless coin counts come out wrong. Every coin
+//              prints a PULSE TIMING line showing the tightest gap it saw; if
+//              that number gets close to this one, lower this.
+//  CONSOLE     none — needs a reflash
 const uint32_t COIN_PULSE_DEBOUNCE_MS = 20;
 
-// Quiet time that means "that coin is finished, count the pulses".     LIVE: g
-// Must be longer than the gap BETWEEN pulses of one coin and shorter than a
-// person can insert two coins. 250 ms suits nearly every acceptor.
+// ---------------------------------------------------------------------------
+//  COIN_GAP_MS — the silence that means "that coin is finished, count it"
+// ---------------------------------------------------------------------------
+//  WHAT        One coin is a burst of pulses. This is how long the line must
+//              stay quiet before the firmware decides the burst has ended and
+//              adds up what it counted. A KSh 40 coin is 40 pulses and its
+//              burst runs for seconds, so this matters more here than on a
+//              machine that only takes one coin type.
+//  TOO SHORT   A single coin gets split in two. A KSh 20 (20 pulses) reads as
+//              2 + 18: the first half is priced as KSh 5, the second half is
+//              unknown, and the customer is short-changed by 15 shillings.
+//  TOO LONG    Two coins inserted quickly get merged into one burst. Two KSh 5
+//              coins become one 4-pulse "coin" that is in no table, and the
+//              money is gone. The acceptor cannot physically deliver two coins
+//              closer than about 600 ms, so that is your hard ceiling.
+//  HOW TO SET  Drop one of each coin and read the PULSE TIMING line. Take the
+//              WIDEST gap you see and roughly double it — that is your floor.
+//              Then insert two coins as fast as the acceptor will take them
+//              and confirm they still read as two. Anywhere comfortably
+//              between those results is right. 250 ms suits most units.
+//  CONSOLE     g<ms>   e.g.  g350
 uint32_t COIN_GAP_MS = 250;
 
-// Give up waiting for the pad to break the beam: empty, or jammed.     LIVE: o
-// Set it to about double the time one revolution of the coil takes. Command  m
-// runs the motor for a measured number of milliseconds so you can time it.
+// ---------------------------------------------------------------------------
+//  DISPENSE_TIMEOUT_MS — how long to wait before deciding NOTHING DROPPED
+// ---------------------------------------------------------------------------
+//  This is the one to get right. It decides whether a perfectly good machine
+//  starts throwing faults at people.
+//
+//  WHAT        The motor starts and the firmware watches the IR beam across
+//              the chute. If a pad breaks that beam the motor stops and the
+//              screen says TAKE YOUR PAD. If nothing breaks it within this
+//              time, the firmware concludes no pad came out. What happens then
+//              depends on the stock switch:
+//
+//                stock switch says EMPTY  ->  goes to EMPTY, which recovers by
+//                                             itself the moment you refill
+//                stock switch says FULL   ->  it cannot be empty, so it is a
+//                                             jam. Latches FAULT "JAMMED"
+//                no stock switch fitted   ->  cannot tell, so it stays
+//                                             cautious: FAULT "EMPTY OR
+//                                             JAMMED"
+//
+//              Either way the motor stops and the console says plainly that
+//              the customer paid for that pad and did not get it.
+//  TOO SHORT   The machine gives up while the pad is still on its way out. You
+//              get faults on a machine that works perfectly, and every one of
+//              them takes a person with a key to clear. This is by far the
+//              more likely mistake.
+//  TOO LONG    The coil keeps turning after a real jam, which can chew a pad
+//              or stall the motor, and the customer stands there waiting.
+//  HOW TO SET  With the coil loaded, run the motor in fixed bursts until you
+//              have timed ONE full revolution:
+//
+//                  m500     m1000     m1500     m2000   ...
+//
+//              The console prints the exact moment the beam broke, so you get
+//              the real drop time rather than a guess. Set this to about
+//              DOUBLE the slowest drop you saw. Margin here is cheap; a
+//              phantom fault in a washroom is not.
+//  CONSOLE     o<ms>   e.g.  o3000
 uint32_t DISPENSE_TIMEOUT_MS = 3000;
 
-// Drop partial credit after this long with nobody feeding it.
+// ---------------------------------------------------------------------------
+//  CREDIT_TIMEOUT_MS — forget part-payment nobody came back for
+// ---------------------------------------------------------------------------
+//  WHAT        Somebody puts KSh 10 into a KSh 20 machine and walks away. This
+//              is how long that credit sits on the screen before it is
+//              cleared, so the next customer does not walk up to somebody
+//              else's money.
+//  TOO SHORT   A customer digging in her bag for a second coin loses the
+//              first one. Very easy to do at a coin slot in a hurry.
+//  TOO LONG    The next person gets a free or discounted pad, and your takings
+//              stop matching your pad count.
+//  HOW TO SET  20 seconds is a fair compromise: long enough to find a second
+//              coin, short enough that the next person is unlikely to benefit.
+//              Watch real users before changing it.
+//  CONSOLE     none — needs a reflash
 const uint32_t CREDIT_TIMEOUT_MS = 20000;
 
-// Ignore beam flicker shorter than this.
+// ---------------------------------------------------------------------------
+//  IR_DEBOUNCE_MS — noise filter on the drop beam
+// ---------------------------------------------------------------------------
+//  WHAT        The beam must read the same for this long before the reading is
+//              believed. Stops dust, a flickering sensor or the edge of the
+//              coil from registering as a delivered pad.
+//  TOO SHORT   Noise counts as a pad. The motor stops early and the customer
+//              gets nothing while the screen cheerfully says TAKE YOUR PAD.
+//  TOO LONG    A fast-falling pad can clear the beam before the filter accepts
+//              it, so a real delivery is missed and you get a phantom jam.
+//  HOW TO SET  15 ms is right for a pad falling under gravity. If the console
+//              reports a delivery under 150 ms it warns you, because that
+//              usually means the sensor is seeing the coil rather than a pad —
+//              re-aim the sensor rather than changing this.
+//  CONSOLE     none — needs a reflash
 const uint32_t IR_DEBOUNCE_MS = 15;
 
-// Beam must read clear for this long before we dare start the motor.
+// ---------------------------------------------------------------------------
+//  IR_SETTLE_MS — prove the chute is clear BEFORE the motor starts
+// ---------------------------------------------------------------------------
+//  WHAT        Before every vend the firmware watches the beam for this long
+//              and refuses to start if anything is in the way. It will not run
+//              the motor blind into a chute that already has something in it.
+//              Nothing is charged if this check refuses: the credit stays on
+//              the meter, because that is not the customer's fault.
+//  TOO SHORT   A brief clear moment lets a vend start over a real blockage.
+//  TOO LONG    A visible pause between paying and the motor starting, which
+//              makes the machine feel broken.
+//  HOW TO SET  150 ms is long enough to be sure and short enough to feel
+//              instant. No reason to change it.
+//  CONSOLE     none — needs a reflash
 const uint32_t IR_SETTLE_MS = 150;
 
-// How long "TAKE YOUR PAD" stays up.
+// ---------------------------------------------------------------------------
+//  MESSAGE_HOLD_MS — how long "TAKE YOUR PAD" stays on the screen
+// ---------------------------------------------------------------------------
+//  WHAT        After a successful vend, how long the machine holds that
+//              message before going back to INSERT COIN.
+//  TOO SHORT   The customer looks up and the message is already gone, so she
+//              is not sure anything happened.
+//  TOO LONG    The next customer waits at a screen that is not ready for her.
+//  HOW TO SET  Purely how it feels. 2.5 s reads comfortably at arm's length.
+//  CONSOLE     none — needs a reflash
 const uint32_t MESSAGE_HOLD_MS = 2500;
 
-// Hard ceiling on motor run time, over and above DISPENSE_TIMEOUT_MS. This is
-// the backstop: it is checked every single pass of loop() in every state, so
-// even a bug in the state machine below cannot leave the coil turning. If it
-// ever fires you have a real problem and the console will say so.
+// ---------------------------------------------------------------------------
+//  MOTOR_LIMIT_MARGIN_MS — the backstop, on top of DISPENSE_TIMEOUT_MS
+// ---------------------------------------------------------------------------
+//  WHAT        A hard ceiling on motor run time: DISPENSE_TIMEOUT_MS + this.
+//              Checked on EVERY pass of loop(), in EVERY state, before
+//              anything else runs, and it does not trust the state machine to
+//              have stopped the motor. In normal operation it is unreachable,
+//              because the dispense timeout always fires first.
+//  TOO SHORT   It could fire during a slow but legitimate vend and report a
+//              firmware bug that is not there.
+//  TOO LONG    A genuinely runaway motor runs longer before anything catches
+//              it.
+//  HOW TO SET  Leave it. If this ever fires, the console says so and calls it
+//              a firmware bug rather than a jam, because that is what it is.
+//              Report it rather than raising this number.
+//  CONSOLE     follows  o<ms>  automatically
 const uint32_t MOTOR_LIMIT_MARGIN_MS = 2000;
 
-// A mechanical switch under a stack of pads chatters as the stack settles, so
-// debounce it far harder than an electronic sensor.
+// ---------------------------------------------------------------------------
+//  PAD_SWITCH_DEBOUNCE_MS — noise filter on the pad stock switch
+// ---------------------------------------------------------------------------
+//  WHAT        How long the stock switch must read the same before the machine
+//              believes it. A mechanical switch under a stack of pads chatters
+//              badly as the stack shifts and settles, so this is debounced far
+//              harder than any electronic sensor here.
+//  TOO SHORT   The machine flips between in-service and OUT OF STOCK as the
+//              stack settles, clicking the inhibit relay every time.
+//  TOO LONG    A refill takes a noticeable moment to be noticed. Harmless.
+//  HOW TO SET  Type  k  to watch the switch live, then work the lever and load
+//              a stack. If the reading dances, raise this. 400 ms is a
+//              deliberately generous starting point.
+//  CONSOLE     none — needs a reflash
 const uint32_t PAD_SWITCH_DEBOUNCE_MS = 400;
 
-// The beam reading "pad present" for this long while idle means something is
-// sitting in the chute, or the sensor is mis-aimed. Warning only.
+// ---------------------------------------------------------------------------
+//  IR_STUCK_WARN_MS — nag about something sitting in the chute
+// ---------------------------------------------------------------------------
+//  WHAT        If the beam reads BLOCKED for this long while the machine sits
+//              idle, the console says so once. Warning only: it does not
+//              fault, does not stop anything, and does not repeat.
+//  TOO SHORT   Console chatter every time a hand passes the chute.
+//  TOO LONG    A blockage sits unreported until a customer finds it for you.
+//  HOW TO SET  Leave it. It exists to put a heads-up in the log before the
+//              next paid vend turns it into a fault.
+//  CONSOLE     none — needs a reflash
 const uint32_t IR_STUCK_WARN_MS = 5000;
 
 // ===========================================================================
-//  SECTION 6 — SOUND.  It sits in a public washroom. Keep it short.
+//  SECTION 6 — SOUND
 // ===========================================================================
+//
+//  This machine lives in a public washroom and its customer may well be
+//  embarrassed to be standing at it. Sound is there to confirm that something
+//  happened, not to announce it to the room. Keep every tone SHORT.
+//
+//  Each is a frequency in Hz and a duration in ms. The four are deliberately
+//  distinguishable with your back turned:
+//
+//    COIN    high and very short   — "that went in"
+//    REJECT  low and flat          — "no, try again" (unknown coin, or the
+//                                    machine is busy, faulted or empty)
+//    VEND    mid and brief         — "your pad is there"
+//    FAULT   low and long          — "something is wrong"
+//
+//  The buzzer is non-blocking: beep() starts a note and returns immediately,
+//  and buzzerService() in loop() stops it when the time is up. A vending
+//  machine must never be sitting in delay() while a coin is going in.
+//
 const uint16_t TONE_COIN_HZ = 2200;
 const uint16_t TONE_COIN_MS = 60;
 const uint16_t TONE_REJECT_HZ = 600;
@@ -329,6 +591,37 @@ const bool HALT_ON_SELFTEST_FAIL = true;
 // ===========================================================================
 //  STATE
 // ===========================================================================
+//
+//  The machine is always in exactly one of five states, and the state decides
+//  two things: what is on the screen, and whether the coin acceptor is live.
+//
+//    ST_IDLE        Waiting for money. THE ONLY STATE THAT ACCEPTS COINS.
+//                   Leaves here when credit reaches the price, or when the
+//                   stock switch says the coil is empty.
+//
+//    ST_DISPENSING  Motor turning, watching the beam. Coins inhibited. Ends
+//                   when a pad breaks the beam (-> DELIVERED) or when
+//                   DISPENSE_TIMEOUT_MS runs out (-> EMPTY or FAULT).
+//
+//    ST_DELIVERED   Pad fell. "TAKE YOUR PAD" holds for MESSAGE_HOLD_MS, then
+//                   back to IDLE. Coins stay inhibited through the hold so a
+//                   coin cannot arrive against a screen that is not ready.
+//
+//    ST_EMPTY       Stock switch says no pads. Coins inhibited. NOT a fault
+//                   and NOT latched: it returns to IDLE on its own the moment
+//                   the switch says pads are back, so a refill is all it takes
+//                   and nobody has to drive out with a key.
+//
+//    ST_FAULT       Something is wrong that needs a person: a jam, a sensor
+//                   reading wrong, or a failed self-test. Coins inhibited.
+//                   LATCHED — it stays here until the clear button is held for
+//                   CLEAR_BTN_HOLD_MS or  x  is typed, and even then it
+//                   refuses while the beam still reads blocked.
+//
+//  The rule the whole design rests on: EVERY state except ST_IDLE inhibits the
+//  coin acceptor. The machine would rather refuse a sale than take money for a
+//  pad it cannot promise to deliver.
+//
 enum State
 {
   ST_IDLE,
@@ -454,8 +747,32 @@ uint8_t faultMsgIdx = 0;
 uint32_t faultRotateMs = 0;
 
 // ===========================================================================
-//  ISR
+//  ISR — counting coin pulses without missing any
 // ===========================================================================
+//
+//  HOW A MULTI-COIN ACCEPTOR TALKS
+//  It does not say "that was twenty shillings". It pulls one line LOW a fixed
+//  number of times, quickly, and the NUMBER OF PULSES identifies which coin it
+//  was. On this machine: 2 pulses = KSh 5, 10 = KSh 10, 20 = KSh 20,
+//  40 = KSh 40. See SECTION 2.
+//
+//  So reading a coin is two jobs, and they are split in two on purpose:
+//
+//    onCoinPulse()  runs in an interrupt, on the falling edge of every pulse.
+//                   It does the absolute minimum — count, timestamp, return —
+//                   because an interrupt that dawdles loses the next pulse.
+//                   It also debounces, so electrical ringing on one edge is
+//                   not counted twice (COIN_PULSE_DEBOUNCE_MS).
+//
+//    takeCoin()     runs in loop(). It watches for the line to go quiet for
+//                   COIN_GAP_MS, which is what "that coin is finished" looks
+//                   like, and only then hands the finished count over to be
+//                   priced.
+//
+//  It also measures the gaps between pulses as it goes, because with a
+//  40-pulse coin those numbers are the only way to know whether COIN_GAP_MS
+//  has enough margin on both sides. They print with every coin.
+//
 void IRAM_ATTR onCoinPulse()
 {
   uint32_t now = millis();
@@ -546,6 +863,25 @@ void motorOff()
   motorRunning = false;
 }
 
+// Turn the coin slot on or off, through the second relay.
+//
+//  There are two independent polarities to get right here, which is why this
+//  is a function and not a digitalWrite:
+//
+//    INHIBIT_CONTACT_IS_NC       which relay contact you wired to the acceptor
+//    INHIBIT_RELAY_ACTIVE_HIGH   which way the relay module's input works
+//
+//  With the shipped settings (NC contact, active-LOW module) it works out as:
+//
+//      want        contact      relay      pin
+//      ----------  -----------  ---------  ------
+//      inhibit     closed       off        HIGH
+//      accept      open         on         LOW
+//
+//  The NC contact is the important half. Closed means inhibited, and a relay
+//  with no power sits closed — so an unpowered, booting, halted or crashed
+//  controller refuses money instead of eating it. Change INHIBIT_CONTACT_IS_NC
+//  only if you also move the wire.
 void coinAcceptorAllow(bool allow)
 {
   bool contactClosed = !allow; // closed == inhibited
@@ -653,8 +989,21 @@ void say(const char *l1, const char *l2 = "")
   lcd.print(l2);
 }
 
-// Reads the sensor and returns true only once a change has held for
-// IR_DEBOUNCE_MS.
+// THE DROP SENSOR — the machine's only proof that a pad actually came out.
+//
+//  Turning the coil is not the same as delivering a pad, so the firmware never
+//  assumes. An IR beam crosses the chute; a falling pad breaks it. That break
+//  is what stops the motor and what counts as a sale.
+//
+//  This returns true only once the reading has held steady for IR_DEBOUNCE_MS,
+//  so dust, a flickering sensor or the edge of the coil passing cannot be
+//  mistaken for a pad. Call it often — it does its own timing internally and
+//  only updates when something has actually settled.
+//
+//  It is called in three quite different jobs:
+//    - before a vend, to prove the chute is EMPTY (startVend)
+//    - during a vend, to catch the pad falling (ST_DISPENSING)
+//    - before clearing a fault, to prove the jam is really gone (attemptClear)
 bool padSeen()
 {
   bool level = (digitalRead(PIN_IR) == LOW);
@@ -706,6 +1055,28 @@ void rule()
   LOGLN(F("-----------------------------------------------------"));
 }
 
+// ===========================================================================
+//  GOING OUT OF SERVICE, AND COMING BACK
+// ===========================================================================
+//
+//  Two different ways for the machine to stop selling, and they are kept
+//  deliberately distinct because they need opposite handling:
+//
+//    enterFault()   Something is wrong that a person has to look at: a jam, a
+//                   sensor reading wrong, a failed self-test. LATCHES. Coins
+//                   inhibited. Screen says OUT OF ORDER. Only attemptClear()
+//                   gets you out, and it refuses while the chute is still
+//                   blocked.
+//
+//    enterEmpty()   The machine simply ran out. Routine, not broken. DOES NOT
+//                   LATCH. Coins inhibited, screen says SORRY - NO PADS, and
+//                   loop() puts it back in service by itself the moment the
+//                   stock switch says pads are loaded.
+//
+//  Getting this split wrong is expensive in the real world: latching on
+//  "empty" would leave a site dead until somebody drove there, when all it
+//  needed was the refill that was already scheduled.
+//
 void enterFault(const char *line2)
 {
   motorOff();
@@ -839,6 +1210,25 @@ void attemptClear(const char *who)
   LOGLN(F("Coins enabled."));
 }
 
+// THE JAM-CLEAR BUTTON — an attendant control, mounted INSIDE the locked door.
+//
+//  Held for CLEAR_BTN_HOLD_MS, it puts a faulted machine back in service. It
+//  is a hold rather than a press so that a brush past it in a dark cabinet
+//  cannot return a broken machine to service.
+//
+//  Two things guard it, both deliberate:
+//
+//    A hold already in progress cannot clear a fault that arrives DURING that
+//    hold. enterFault() calls armClearButtonForNewFault(), which marks the
+//    current press as already dealt with. The button must be seen released and
+//    then pressed again — the way a person would actually do it. Without this,
+//    a shorted or jammed-down button would clear every fault the instant it
+//    happened, forever, and the machine would loop through jam after jam
+//    taking money the whole way.
+//
+//    attemptClear() re-checks the beam before it agrees. Clearing a fault with
+//    a pad still wedged in the chute only faults again on the next coin —
+//    after taking that customer's money.
 void clearButtonService()
 {
   uint32_t now = millis();
@@ -965,8 +1355,36 @@ void reportCoin(uint16_t pulses, const CoinDef *coin, const CoinBurst *b = nullp
 }
 
 // ===========================================================================
-//  SELF-TEST
+//  SELF-TEST — nine checks, at every boot and on demand with  d
 // ===========================================================================
+//
+//  The job here is to catch, before a single coin is counted, anything that
+//  would make the machine take money and do the wrong thing with it.
+//
+//    [1] POWER / RESET     why we rebooted. Names BROWNOUT (the motor is
+//                          dragging the rail down) and PANIC (firmware crash)
+//                          specifically, because those two are what actually
+//                          happen to this machine in the field.
+//    [2] COIN TABLE        FATAL on an empty table, a 0-pulse entry, or two
+//                          coins sharing a pulse count — that last one is
+//                          money you could never account for.
+//    [3] PULSE DECODING    FATAL if COIN_GAP_MS is too close to the debounce,
+//                          which would split one coin into several.
+//    [4] SCREEN            scans the whole I2C bus and prints what answered,
+//                          so a blank LCD is never a guessing game. Missing
+//                          screen is not fatal: it runs headless.
+//    [5] IR DROP SENSOR    FATAL if the chute reads blocked at rest.
+//    [6] RELAY / MOTOR     pin, polarity, and the two timeouts.
+//    [7] INHIBIT / BUTTON  contact type, and the pull-up warning that goes
+//                          with an active-LOW relay module.
+//    [8] PAD STOCK SWITCH  reading, polarity, or a reminder that it is
+//                          bypassed because PAD_SWITCH_FITTED is false.
+//    [9] BUZZER            one chirp. Silence means check the wiring.
+//
+//  A FATAL result stops setup() before attachCoinIsr(), so the coin interrupt
+//  is never attached and the acceptor stays inhibited. The console stays alive
+//  so you can find out why. HALT_ON_SELFTEST_FAIL in SECTION 7 turns that off.
+//
 const char *resetReasonName()
 {
   switch (esp_reset_reason())
@@ -1296,8 +1714,38 @@ bool selfTest(bool verbose)
 }
 
 // ===========================================================================
-//  SERIAL CONSOLE
+//  SERIAL CONSOLE — 115200 baud, type ? for the list
 // ===========================================================================
+//
+//  This is how the machine is commissioned, calibrated and diagnosed. It is
+//  not a debug afterthought: the bring-up procedure in README.md is a sequence
+//  of these commands.
+//
+//  The ones that matter most:
+//
+//    m<ms>   Run the motor for exactly <ms> and report when the beam broke.
+//            This is how you time one revolution of the coil, which is the
+//            only honest way to set DISPENSE_TIMEOUT_MS.
+//    o<ms>   Set DISPENSE_TIMEOUT_MS live, so you can try a value before you
+//            commit it to SECTION 5.
+//    g<ms>   Same for COIN_GAP_MS.
+//    i / k   Watch the IR beam / the stock switch live while you aim or mount
+//            them. Any other command turns the watch off again.
+//    d       Re-run the whole self-test without rebooting.
+//    v<n>    Pretend an <n>-pulse coin went in, to exercise the logic with no
+//            coins to hand.
+//
+//  Two behaviours worth knowing:
+//
+//    Nothing typed here is saved. There is no flash storage in this build, by
+//    design. The console is for FINDING the number; SECTION 5 is where it
+//    lives once you have it.
+//
+//    A typed command always answers in full, even on a machine installed with
+//    SERIAL_LOG_DEFAULT false. handleCommand() forces logging on for its own
+//    duration and puts it back afterwards, so a service visit can plug in a
+//    laptop and press  s  on a machine that is otherwise silent.
+//
 void printHelp()
 {
   rule();
@@ -1694,6 +2142,13 @@ void handleCommand(char *s)
   logOn = logEvents;
 }
 
+// Read the console without ever blocking.
+//
+//  Commands normally arrive terminated by a newline. But the Arduino Serial
+//  Monitor defaults to "No line ending", and somebody on a bench at midnight
+//  should not have to know that — so if characters have arrived and then
+//  stopped for CMD_IDLE_FLUSH_MS, the command is taken anyway. Both settings
+//  work, and nobody has to be told which one to use.
 void pollSerial()
 {
   while (Serial.available())
@@ -1725,8 +2180,25 @@ void pollSerial()
 }
 
 // ===========================================================================
-//  SETUP
+//  SETUP — boot order, and why it is this order
 // ===========================================================================
+//
+//    1. Relay pins to OUTPUT and both relays OFF. FIRST, before anything else,
+//       including Serial. Until this line runs the pins are floating, and a
+//       floating pin is a motor that can twitch and a coin slot that is live.
+//    2. Serial up, banner out.
+//    3. Remaining pins, and prime the stock debouncer from the real pin so the
+//       machine does not announce a change it never made.
+//    4. Self-test. Nine checks, all printed.
+//    5. LCD up, but only if the self-test actually found it on the bus.
+//    6. If the self-test was FATAL: show it, stay in ST_FAULT, and RETURN
+//       WITHOUT ATTACHING THE COIN INTERRUPT. The console stays alive. The
+//       acceptor is still inhibited from step 1, so no money can come in that
+//       the firmware cannot account for.
+//    7. Otherwise attach the coin interrupt — the single point at which this
+//       machine becomes able to take money — and open for business, or go
+//       straight to OUT OF STOCK if the coil is already empty.
+//
 void setup()
 {
   // Relay first and before anything else, so the motor cannot twitch on boot.
@@ -1819,6 +2291,28 @@ void setup()
 // ===========================================================================
 //  LOOP
 // ===========================================================================
+//  THE ORDER BELOW IS LOAD-BEARING. Roughly:
+//
+//    1. Motor backstop        first, and trusting nothing below it
+//    2. Serial + clear button so a person can always get in
+//    3. Watches               live sensor views, if one is running
+//    4. Coins                 decode any finished coin and bank it
+//    5. Stock                 empty -> ST_EMPTY, refilled -> ST_IDLE
+//    6. Re-enable the slot    only if we are still IDLE after step 5
+//    7. The state machine     which may start a vend
+//
+//  Two of those orderings are not arbitrary:
+//
+//    Stock (5) runs BEFORE the acceptor is re-enabled (6), so returning to
+//    IDLE over an empty coil never clicks the relay on and straight back off.
+//
+//    Stock (5) runs BEFORE the state machine (7), so credit that arrives in
+//    the same pass as the coil running dry cannot start a vend that has no pad
+//    to give.
+//
+//  Stock is deliberately NOT checked during a vend. Once the motor is turning,
+//  the IR beam is the only authority on whether a pad actually fell — not a
+//  switch sitting under a stack that is in the middle of moving.
 void loop()
 {
   uint32_t loopStartUs = micros();
