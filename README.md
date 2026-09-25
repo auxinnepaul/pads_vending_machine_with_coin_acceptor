@@ -72,7 +72,7 @@ band faces.
 | IR sensor | 27 | powered from 3V3 |
 | Buzzer | 25 | passive, LEDC or `tone()` depending on core version |
 | Coin inhibit | 19 | relay 2 → HX-916 2-pin port. Active LOW, **10 kΩ pull-UP to 3V3** |
-| Jam clear | 23 | momentary button to GND, `INPUT_PULLUP`, inside the locked door |
+| Retry button | 23 | momentary button to GND, `INPUT_PULLUP`, **on the front where a customer can reach it** |
 | Pad stock | 13 | limit switch to GND, `INPUT_PULLUP`. Closed = pads present |
 
 Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
@@ -866,12 +866,35 @@ inhibits the coin acceptor, so a jammed or empty machine physically refuses
 coins instead of eating them. The LCD rotates `OUT OF ORDER` over the reason,
 `NO COINS TAKEN`, and `HOLD RESET BTN`.
 
-**To clear:** hold the button inside the locked door for 1 second, or type `x`.
-Either route re-checks the beam first and **refuses to clear while the chute is
-still blocked** — clearing with a pad still wedged would just fault again on
-the next coin, after taking the money. A fault that arrives while the button is
-already held cannot ride that hold into clearing itself; it has to be released
-and pressed fresh.
+### The retry button is for the customer, not for staff
+
+By the time a vend fails, her coin is already in the cash box and the machine
+owes her a pad. Making her find a member of staff to get what she has paid for
+is the wrong answer when the machine can simply try again.
+
+So the button goes **on the front, where she can reach it.** Hold it for one
+second and the machine clears the fault, **keeps her credit**, and dispenses on
+the next pass. The screen tells her so:
+
+```
+PAID - NO PAD YET
+HOLD BUTTON 1 SEC
+```
+
+Three attempts. A jam that survives three tries is not going to clear itself,
+and carrying on just works the coil against whatever is stuck — at that point
+it really is a staff problem and the screen changes to `SORRY - JAMMED / GET
+HELP`. The console `x` still clears it and forgives the count, because anyone
+with a console has presumably just looked inside. Any successful delivery
+resets the budget.
+
+With **nothing owed**, the same fault shows `OUT OF ORDER` instead, because
+then it is not a customer's problem to solve.
+
+Both routes re-check the beam first and **refuse while the chute is still
+blocked** — clearing with a pad wedged would only fault again on the next coin.
+A fault that arrives while the button is already held cannot ride that hold
+into clearing itself; it has to be released and pressed fresh.
 
 ### When the coin slot is open
 

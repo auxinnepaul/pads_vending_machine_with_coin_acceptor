@@ -396,6 +396,25 @@ const bool PADS_PRESENT_IS_LOW = true;
 // there refusing to vend while you wonder why.
 const bool PAD_SWITCH_FITTED = true;
 
+// --- RETRY BUTTON ---
+//
+//  This is a CUSTOMER control, on the front where she can reach it, not an
+//  attendant control behind a lock. The reason is the money: by the time a
+//  vend fails, her coin is already in the cash box and the machine owes her a
+//  pad. Making her find a member of staff to get what she has paid for is the
+//  wrong answer when the machine can simply try again.
+//
+//  Held for CLEAR_BTN_HOLD_MS it clears the fault AND KEEPS HER CREDIT, so the
+//  machine dispenses on the next pass. A hold rather than a tap so that
+//  brushing past it does nothing.
+//
+//  How many times she may retry before it stops listening. A jam that survives
+//  this many attempts is not going to clear itself, and continuing just works
+//  the coil against whatever is stuck. At that point it is genuinely a staff
+//  problem: the console  x  still clears it, and so does a power cycle.
+//  Reset by any successful delivery.
+const uint8_t MAX_BUTTON_RETRIES = 3;
+
 // --- JAM-CLEAR BUTTON ------------------------------------------------------
 // Momentary NO button between PIN_CLEAR and GND. Mount it INSIDE the locked
 // door — it is an attendant control, not a customer control.
@@ -963,6 +982,7 @@ static inline uint32_t motorHardLimitMs()
 
 // attemptClear() is defined above both of these but has to call them.
 bool selfTest(bool verbose);
+void attemptClear(const char *who, bool fromButton);
 void attachCoinIsr();
 static bool vendInFlight();
 void repaintForState();
@@ -985,6 +1005,7 @@ bool clearBtnStable = false;
 uint32_t clearBtnChangedMs = 0;
 uint32_t clearBtnDownMs = 0;
 bool clearBtnHandled = false;
+uint8_t buttonRetries = 0; // consecutive button clears with no pad delivered
 char faultLine2[17] = "";
 uint8_t faultMsgIdx = 0;
 uint32_t faultRotateMs = 0;
@@ -1654,6 +1675,15 @@ void enterFault(const char *line2)
   LOGLN(line2);
   LOGLN(F("*** Coins inhibited. Clear the chute, then hold the"));
   LOGLN(F("*** front-panel button for 1 s, or type  x."));
+  if (credit >= PAD_PRICE)
+  {
+    LOG(F("*** The customer is owed a pad and has KSH "));
+    LOG(credit);
+    LOGLN(F(" on the meter."));
+    LOG(F("*** The button will retry and dispense it. "));
+    LOG(MAX_BUTTON_RETRIES - buttonRetries);
+    LOGLN(F(" attempts left."));
+  }
 }
 
 // The idle screen, in its two forms. One function owns both so they cannot
@@ -1759,13 +1789,28 @@ void enterEmpty()
   }
 }
 
-void attemptClear(const char *who)
+void attemptClear(const char *who, bool fromButton)
 {
   if (state != ST_FAULT)
   {
     LOG(F("Clear requested by "));
     LOG(who);
     LOGLN(F(" but the machine is not faulted."));
+    return;
+  }
+
+  // A customer may only try so many times. Past that the coil is being worked
+  // against something that is not moving, and she needs a person rather than
+  // another attempt. The console keeps working, because that is staff.
+  if (fromButton && buttonRetries >= MAX_BUTTON_RETRIES)
+  {
+    say("SORRY - JAMMED", "GET HELP");
+    beep(TONE_REJECT_HZ, TONE_REJECT_MS);
+    LOG(F("Refusing: "));
+    LOG(buttonRetries);
+    LOGLN(F(" retries already and still no pad."));
+    LOGLN(F("This needs opening up. The console  x  still works."));
+    faultRotateMs = millis() + MESSAGE_HOLD_MS;
     return;
   }
 
@@ -1818,16 +1863,23 @@ void attemptClear(const char *who)
   motorOff();
   LOG(F("Fault cleared by "));
   LOGLN(who);
+
+  //  THE CREDIT STAYS. This used to be zeroed here, which was wrong: the coin
+  //  is already in the cash box and the machine owes a pad. Wiping the meter
+  //  on the way out of a fault would have taken her money and given nothing,
+  //  which is the one failure the whole payment design exists to prevent.
+  //
+  //  Keeping it means ST_IDLE sees credit >= price on the very next pass and
+  //  dispenses. That is the entire point of the button: she presses it and
+  //  gets what she paid for, without finding a member of staff.
   if (credit > 0)
   {
-    // Worth stating out loud. By the time somebody unlocks the door the
-    // customer is long gone, so carrying this forward would just hand the next
-    // person a free pad. It is cleared on purpose, not lost by accident.
-    LOG(F("Clearing KSH "));
+    LOG(F("KSH "));
     LOG(credit);
-    LOGLN(F(" of credit that was on the meter."));
+    LOGLN(F(" is still on the meter and will be dispensed now."));
+    if (fromButton)
+      buttonRetries++;
   }
-  setCredit(0);
 
   // Clearing a jam on an empty coil must not flick the machine into service
   // for the one pass it takes the stock check to notice — that is an audible
@@ -1890,7 +1942,7 @@ void clearButtonService()
       (now - clearBtnDownMs) >= CLEAR_BTN_HOLD_MS)
   {
     clearBtnHandled = true;
-    attemptClear("front panel button");
+    attemptClear("the retry button", true);
   }
 }
 
@@ -2811,7 +2863,10 @@ void handleCommand(char *s)
     break;
 
   case 'x':
-    attemptClear("serial console");
+    // Staff override: always allowed, and it forgives the retry ceiling,
+    // because somebody with a console has presumably just looked inside.
+    buttonRetries = 0;
+    attemptClear("serial console", false);
     break;
 
   case 'r':
@@ -3464,6 +3519,7 @@ void loop()
       // be wrong in a window of milliseconds, err toward the customer.
 
       vendCount++;
+      buttonRetries = 0; // it worked, so the retry budget is whole again
       // If there is change, name the amount rather than just saying some
       // exists. She is about to be asked to add to it.
       char l2[17];
@@ -3608,21 +3664,34 @@ void loop()
     if (reached(now, faultRotateMs))
     {
       faultRotateMs = now + FAULT_ROTATE_MS;
-      const char *l2;
-      switch (faultMsgIdx)
+      //  Two quite different messages, because two quite different people are
+      //  standing there. With credit on the meter it is a customer who has
+      //  paid and has no pad: tell her to hold the button, not that the
+      //  machine is out of order. With nothing owed it really is out of order.
+      if (credit >= PAD_PRICE && buttonRetries < MAX_BUTTON_RETRIES)
       {
-      case 0:
-        l2 = faultLine2[0] ? faultLine2 : "SEE SERIAL";
-        break;
-      case 1:
-        l2 = "NO COINS TAKEN";
-        break;
-      default:
-        l2 = "HOLD RESET BTN";
-        break;
+        say("PAID - NO PAD YET",
+            faultMsgIdx == 0 ? "HOLD BUTTON 1 SEC" : "TO TRY AGAIN");
+        faultMsgIdx = (faultMsgIdx + 1) % 2;
       }
-      say("OUT OF ORDER", l2);
-      faultMsgIdx = (faultMsgIdx + 1) % 3;
+      else
+      {
+        const char *l2;
+        switch (faultMsgIdx)
+        {
+        case 0:
+          l2 = faultLine2[0] ? faultLine2 : "SEE SERIAL";
+          break;
+        case 1:
+          l2 = "NO COINS TAKEN";
+          break;
+        default:
+          l2 = "NEEDS ATTENTION";
+          break;
+        }
+        say("OUT OF ORDER", l2);
+        faultMsgIdx = (faultMsgIdx + 1) % 3;
+      }
     }
     break;
   }
