@@ -2043,6 +2043,21 @@ bool startVend(const char *why)
   return true;
 }
 
+// True while a vend is in flight. Any console command that BLOCKS for more
+// than a few milliseconds has to refuse when this is true.
+//
+//  While the motor is turning, loop() is the only thing watching the beam and
+//  enforcing both the dispense timeout and the motor backstop. A command that
+//  sits in its own loop for a second or two stops all of that: the pad can
+//  fall unnoticed, and the coil keeps turning with nothing counting the time.
+//
+//  DELIVERED is included because the beam is still clearing and "TAKE YOUR
+//  PAD" is still the thing the customer needs to be reading.
+static bool vendInFlight()
+{
+  return state == ST_DISPENSING || state == ST_DELIVERED;
+}
+
 void handleCommand(char *s)
 {
   char c = s[0];
@@ -2087,8 +2102,21 @@ void handleCommand(char *s)
     i2cScan();
     break;
   case 'd':
+    if (vendInFlight())
+    {
+      LOGLN(F("A vend is in progress. The self-test blocks for over a second"));
+      LOGLN(F("and resets the beam debouncer, so it could miss the pad falling"));
+      LOGLN(F("while the coil keeps turning. Wait for IDLE, then press d."));
+      break;
+    }
     selfTestPassed = selfTest(true);
-    showIdle();
+    // Put the screen back to whatever the machine actually is. showIdle() on
+    // its own used to paint INSERT COIN over a faulted or empty machine and
+    // leave it there until the next rotation tick.
+    faultRotateMs = 0;
+    emptyRotateMs = 0;
+    if (state == ST_IDLE)
+      showIdle();
     break;
   case 'b':
     LOGLN(F("Chirp."));
@@ -2101,6 +2129,12 @@ void handleCommand(char *s)
       LOGLN(F("No LCD found. Run  z  to scan."));
       break;
     }
+    if (vendInFlight())
+    {
+      LOGLN(F("A vend is in progress. This holds the screen for two seconds"));
+      LOGLN(F("and would stop the beam being watched. Wait for IDLE."));
+      break;
+    }
     LOGLN(F("LCD: re-initialised, both lines filled, then back to idle."));
     LOGLN(F("If the screen was showing garbage, this clears it. If it comes"));
     LOGLN(F("back after the next vend, the motor is browning out the display"));
@@ -2108,7 +2142,10 @@ void handleCommand(char *s)
     lcdNeedsReinit = true; // force a full rebuild, that is the point of  l
     say("0123456789ABCDEF", "BRICAPA  v" FW_VERSION);
     holdFor(2000);
-    showIdle();
+    faultRotateMs = 0;
+    emptyRotateMs = 0;
+    if (state == ST_IDLE)
+      showIdle();
     break;
 
   case 'L':

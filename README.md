@@ -590,6 +590,16 @@ Stated here so nothing is claimed that has not been demonstrated.
   3–4 week battery figure in the client study is still arithmetic, not a
   measurement.
 - **One pad product.** The coil is wound to one pitch.
+- **Abandoned part-payment is lost, and that is a policy choice.** Somebody who
+  puts in KSh 10 and walks away loses it after `CREDIT_TIMEOUT_MS` (20 s).
+  There is no refund path — the coin banked into the housing before the
+  firmware heard a pulse. The alternative is leaving it on screen forever,
+  which does not return it either; it just gives the *next* customer a
+  half-price pad. Neither option gets the money back to the person who paid.
+  20 s is on the short side for someone hunting in a bag for a second coin, so
+  consider raising it; it is one number in SECTION 5. Credit that already
+  covers a whole pad is **never** timed out — that is a debt the machine has
+  been paid for and it waits, in IDLE and EMPTY alike.
 - **Stock is a switch, not a count.** The machine knows "empty" or "not empty",
   not "four left". A low-stock warning before a site runs dry needs the
   count-down from the last refill described in the client study, and that needs
