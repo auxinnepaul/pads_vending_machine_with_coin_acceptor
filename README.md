@@ -24,6 +24,7 @@ Everything you need to bring it up, calibrate it and diagnose it is on the
 | LM2596 buck converter | ASK Electronics | 200 |
 | Relay module, 2 channel, active-high | ASK Electronics | 300 |
 | Momentary push button (jam clear, inside the door) | ASK Electronics | 50 |
+| Limit switch (pad stock sense) | ASK Electronics | 100 |
 | Jumper wire | ASK Electronics | 100 |
 | 12 V 4 A adaptor | Town | ~1,000–1,500 |
 | Geared motor, target 30 rpm | Town | ~1,000–1,500 |
@@ -49,8 +50,9 @@ Everything you need to bring it up, calibrate it and diagnose it is on the
 | Relay | 26 | active HIGH, **10 kΩ pull-down to GND** |
 | IR sensor | 27 | powered from 3V3 |
 | Buzzer | 25 | passive, LEDC or `tone()` depending on core version |
-| Coin inhibit | 19 | relay 2 → HX-916 2-pin port. **10 kΩ pull-down to GND** |
+| Coin inhibit | 19 | relay 2 → HX-916 2-pin port. Active LOW, **10 kΩ pull-UP to 3V3** |
 | Jam clear | 23 | momentary button to GND, `INPUT_PULLUP`, inside the locked door |
+| Pad stock | 33 | limit switch to GND, `INPUT_PULLUP`. Closed = pads present |
 
 Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
 
@@ -62,8 +64,30 @@ Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
    If it swings to 12 V, fit a divider or optocoupler. ESP32 pins are not 5 V
    tolerant, let alone 12 V.
 3. **Fit the 10 kΩ pull-down on GPIO 26** so the motor stays still through boot
-   and through every reset while flashing. Fit one on **GPIO 19** too, for the
-   same reason — a floating inhibit line during boot is a live coin slot.
+   and through every reset while flashing.
+4. **Fit a 10 kΩ pull-UP to 3V3 on GPIO 19** — a pull-*up*, the opposite of
+   GPIO 26, because the inhibit relay module is active LOW. The pin floats
+   until `setup()` runs; if it sits low through that window the relay
+   energises, the NC contact opens and the coin slot is live on every reset.
+   Confirm with your ear: reset the board with the acceptor connected and
+   listen for a click.
+
+### Wire the pad stock switch closed-when-full
+
+One side to GPIO 33, the other to GND. Nothing else — the internal pull-up
+does the rest.
+
+**Closed (LOW) = pads present. Open (HIGH) = empty.** That direction is the
+safe one and it is worth being deliberate about. A broken wire, a pulled
+connector or a corroded contact all leave the pin floating HIGH, which reads
+EMPTY, so the machine stops taking money. Wired the other way round, those same
+faults read FULL and the machine cheerfully sells pads it does not have. **A
+failure should cost you a sale, never a customer's money.**
+
+`PAD_SWITCH_FITTED` in SECTION 4 ships **false**, which bypasses the check
+entirely. Set it true once the switch is actually wired — until then an unwired
+pin floats HIGH, reads EMPTY, and the machine would sit refusing to vend while
+you wonder why. The self-test says which mode it is in on every boot.
 
 ### Wire the inhibit relay to the NC contact
 
@@ -117,6 +141,7 @@ takes the command after a short pause in typing.
   t        full test vend, no coin needed
   v<n>     pretend a coin of <n> pulses went in
   i        watch the IR sensor live
+  k        watch the pad stock switch live
   l        LCD test pattern
   b        buzzer test
 
@@ -124,7 +149,20 @@ takes the command after a short pause in typing.
            (or hold the front-panel button for 1 s)
   r        zero the session counters
   h        toggle the heartbeat line
+  L        toggle event logging (off for field installs)
 ```
+
+### Logging in the field
+
+`SERIAL_LOG_DEFAULT` in SECTION 7 silences the routine chatter — every coin,
+vend, warning and fault — for an installed machine. Set it `false` before you
+flash a unit that is going out.
+
+It does not make the machine mute. The boot banner and the **whole self-test
+still print, always**, so a reset during a service visit still tells you
+everything. And **every typed command still answers in full**: plug a laptop in,
+press `s`, and you get the complete status whatever the switch is set to. `L`
+turns the running commentary back on for as long as you want it.
 
 **Console changes are not saved.** Nothing in this build writes to flash. The
 console is for finding the right number; once you have it, write it into the
@@ -134,7 +172,7 @@ CONFIG sections at the top of the `.ino` and reflash.
 
 ## Boot self-test
 
-Every boot runs an eight-part self-test and prints it. Run it again any time
+Every boot runs a nine-part self-test and prints it. Run it again any time
 with `d`.
 
 | # | Checks | Fails the boot if |
@@ -146,7 +184,8 @@ with `d`.
 | 5 | IR polarity, chute clear at rest | **chute blocked at startup** |
 | 6 | Relay pin, timeouts | — |
 | 7 | Inhibit contact type, clear button at rest | — (warns if wired NO) |
-| 8 | Buzzer chirp | — |
+| 8 | Stock switch, or a reminder that it is bypassed | — |
+| 9 | Buzzer chirp | — |
 
 A **fatal** result halts before `attachInterrupt`, so a machine that would
 mis-price coins never counts one, and the acceptor stays inhibited. The console
@@ -205,6 +244,13 @@ burst length and the min/max gap between pulses. Drop one of each coin and note
 the widest gap you see — that is your margin against a coin splitting in two.
 Then insert two coins as fast as the acceptor will take them and confirm they
 still read as two.
+
+**3c. Fit the stock switch,** then set `PAD_SWITCH_FITTED` true and reflash.
+Type `k` and work the lever: you want `PADS PRESENT` with the coil loaded and
+`EMPTY` with it empty. If those are the wrong way round, flip
+`PADS_PRESENT_IS_LOW`. Out of stock is **not** a fault and does not latch — the
+machine inhibits coins, shows `SORRY - NO PADS`, and returns to service by
+itself the moment the switch says pads are back, with no reset needed.
 
 **4. IR sensor,** motor disconnected. Type `i` and wave a pad through the
 chute. If `BLOCKED` and `clear` are the wrong way round, flip
@@ -329,7 +375,12 @@ already held cannot ride that hold into clearing itself; it has to be released
 and pressed fresh.
 
 The acceptor is also inhibited for the duration of every vend, so a coin cannot
-arrive mid-dispense.
+arrive mid-dispense, and for as long as the stock switch says the coil is empty.
+
+**Out of stock is not a fault.** It does not latch and it does not need a
+reset: the machine inhibits coins, shows `SORRY - NO PADS`, and returns to
+service on its own the moment the switch says pads are back. Credit already on
+the meter survives the refill, or times out like any other partial payment.
 
 **A hard motor limit** is checked every pass of the loop, in every state,
 independently of the state machine. Even a firmware bug cannot leave the coil
@@ -355,6 +406,10 @@ Stated here so nothing is claimed that has not been demonstrated.
   3–4 week battery figure in the client study is still arithmetic, not a
   measurement.
 - **One pad product.** The coil is wound to one pitch.
+- **Stock is a switch, not a count.** The machine knows "empty" or "not empty",
+  not "four left". A low-stock warning before a site runs dry needs the
+  count-down from the last refill described in the client study, and that needs
+  somewhere to store the count — which this build deliberately does not have.
 - **A coin already in the slot when a fault hits is still lost.** The inhibit
   relay stops the *next* coin, not one that is already being read. Firmware
   logs it and refuses to bank it, so the machine never owes a pad it cannot

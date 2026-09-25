@@ -73,6 +73,21 @@ struct CoinBurst
   uint32_t durMs;  // first pulse to last pulse
 };
 
+// ---------------------------------------------------------------------------
+//  Logging.  Every Serial.print in this sketch goes through these, so the one
+//  switch in SECTION 7 silences the lot for a field install.
+//
+//  logEvents is the setting. logOn is the momentary gate: handleCommand()
+//  forces it true for the duration of a typed command, so the console always
+//  answers a human even on a machine installed with logging off, then puts it
+//  back. Serial.begin/available/read are never gated — input always works.
+// ---------------------------------------------------------------------------
+bool logEvents = true; // set from SERIAL_LOG_DEFAULT in setup()
+bool logOn = true;     // momentary gate, see above
+
+#define LOG(...) do { if (logOn) Serial.print(__VA_ARGS__); } while (0)
+#define LOGLN(...) do { if (logOn) Serial.println(__VA_ARGS__); } while (0)
+
 
 // ###########################################################################
 // #                                                                         #
@@ -92,6 +107,7 @@ const uint8_t PIN_SDA = 21;
 const uint8_t PIN_SCL = 22;
 const uint8_t PIN_INHIBIT = 19; // relay 2 -> HX-916 2-pin inhibit port
 const uint8_t PIN_CLEAR = 23;   // jam-clear button to GND (INPUT_PULLUP)
+const uint8_t PIN_PADS = 33;    // stock limit switch to GND (INPUT_PULLUP)
 
 // ===========================================================================
 //  SECTION 2 — THE COIN TABLE.  WHAT EACH COIN IS WORTH.
@@ -172,7 +188,13 @@ const uint8_t LCD_I2C_ADDR = 0x27;
 // The HX-916's 2-pin port: upper pin floating = accepting, upper pin shorted
 // to the lower pin (its GND) = inhibited. Driven by a dry relay contact, never
 // by a GPIO — on some units that pin sits at 12 V.
-const bool INHIBIT_RELAY_ACTIVE_HIGH = true;
+//
+// false = the relay module energises when its input is pulled LOW. Most
+//         opto-isolated Chinese relay boards are this way round.
+// IMPORTANT: with an active-LOW module the pin must be HIGH to keep the relay
+// OFF, so GPIO 19 needs a 10k pull-UP to 3V3 — not a pull-down. Get this
+// backwards and the acceptor is live for the whole boot window.
+const bool INHIBIT_RELAY_ACTIVE_HIGH = false;
 
 // Which contact of the relay you wired across the 2-pin port.
 //   true  = NC. Closed with the coil off, so the acceptor is inhibited
@@ -181,6 +203,28 @@ const bool INHIBIT_RELAY_ACTIVE_HIGH = true;
 //   false = NO. A dead controller accepts coins and delivers nothing.
 //           Bench use only.
 const bool INHIBIT_CONTACT_IS_NC = true;
+
+// --- PAD STOCK SWITCH ------------------------------------------------------
+// A mechanical limit switch that tells the machine whether there are pads left
+// to dispense, so it can stop taking money BEFORE somebody pays for nothing.
+//
+// WIRE IT: one side to PIN_PADS, the other to GND. Nothing else. The ESP32's
+// internal pull-up does the rest.
+//
+// CLOSED (pin LOW) = pads present.  OPEN (pin HIGH) = empty.
+//
+// That direction is deliberate and it is the safe one. A broken wire, a pulled
+// connector or a corroded contact all leave the pin floating HIGH, which reads
+// EMPTY — so the machine refuses money. Wired the other way round, the same
+// faults read FULL and the machine cheerfully takes coins over an empty coil.
+// A failure should always cost you a sale, never a customer's money.
+const bool PADS_PRESENT_IS_LOW = true;
+
+// Set this true ONLY once the switch is actually wired. While it is false the
+// stock check is bypassed entirely and the machine behaves as it did before —
+// otherwise an unwired pin floats HIGH, reads EMPTY, and the machine sits
+// there refusing to vend while you wonder why.
+const bool PAD_SWITCH_FITTED = false;
 
 // --- JAM-CLEAR BUTTON ------------------------------------------------------
 // Momentary NO button between PIN_CLEAR and GND. Mount it INSIDE the locked
@@ -229,6 +273,10 @@ const uint32_t MESSAGE_HOLD_MS = 2500;
 // ever fires you have a real problem and the console will say so.
 const uint32_t MOTOR_LIMIT_MARGIN_MS = 2000;
 
+// A mechanical switch under a stack of pads chatters as the stack settles, so
+// debounce it far harder than an electronic sensor.
+const uint32_t PAD_SWITCH_DEBOUNCE_MS = 400;
+
 // The beam reading "pad present" for this long while idle means something is
 // sitting in the chute, or the sensor is mis-aimed. Warning only.
 const uint32_t IR_STUCK_WARN_MS = 5000;
@@ -258,6 +306,18 @@ const bool SELFTEST_CLICKS_RELAY = false;
 bool heartbeatOn = false;
 const uint32_t HEARTBEAT_MS = 10000;
 
+// --- FIELD LOGGING SWITCH --------------------------------------------------
+// true  = the console narrates every coin, vend, warning and fault. What you
+//         want on the bench and during commissioning.
+// false = SHIP IT THIS WAY. Routine event chatter is silenced once the machine
+//         is installed. Nothing else changes:
+//           - the boot banner and the full self-test still print, always, so a
+//             reset in the field still tells a service visit what it needs;
+//           - every typed console command still answers in full. Plug a laptop
+//             in, press s, and you get the whole status whatever this is set to.
+//         Toggle it live with  L  if you want the chatter back for a minute.
+const bool SERIAL_LOG_DEFAULT = true;
+
 // Refuse to leave setup() if the self-test found something fatal. The machine
 // shows the fault on the LCD and waits rather than pretending to work.
 const bool HALT_ON_SELFTEST_FAIL = true;
@@ -274,6 +334,7 @@ enum State
   ST_IDLE,
   ST_DISPENSING,
   ST_DELIVERED,
+  ST_EMPTY,
   ST_FAULT
 };
 State state = ST_IDLE;
@@ -288,6 +349,8 @@ const char *stateName(State s)
     return "DISPENSING";
   case ST_DELIVERED:
     return "DELIVERED";
+  case ST_EMPTY:
+    return "EMPTY";
   case ST_FAULT:
     return "FAULT";
   }
@@ -370,6 +433,14 @@ static inline uint32_t motorHardLimitMs()
 // attemptClear() is defined above both of these but has to call them.
 bool selfTest(bool verbose);
 void attachCoinIsr();
+
+// Debounced pad stock switch
+bool padsRaw = true;
+bool padsStable = true;
+uint32_t padsChangedMs = 0;
+bool stockWatch = false; // console command  k
+uint32_t emptyRotateMs = 0;
+uint8_t emptyMsgIdx = 0;
 
 // added section on purpose of disabling the coin acceptor when jammed
 bool coinsAllowed = false; // starts inhibited, on purpose
@@ -456,7 +527,7 @@ void attachCoinIsr()
     return;
   attachInterrupt(digitalPinToInterrupt(PIN_COIN), onCoinPulse, FALLING);
   coinIsrAttached = true;
-  Serial.println(F("Coin interrupt attached."));
+  LOGLN(F("Coin interrupt attached."));
 }
 
 // ===========================================================================
@@ -483,8 +554,8 @@ void coinAcceptorAllow(bool allow)
   if (allow != coinsAllowed)
   {
     coinsAllowed = allow;
-    Serial.print(F("Coin acceptor "));
-    Serial.println(allow ? F("ENABLED") : F("INHIBITED — coins will be returned"));
+    LOG(F("Coin acceptor "));
+    LOGLN(allow ? F("ENABLED") : F("INHIBITED — coins will be returned"));
   }
 }
 
@@ -607,9 +678,32 @@ bool padSeen()
   return irStable;
 }
 
+// True when there are pads left to dispense. Bypassed entirely, and always
+// true, until PAD_SWITCH_FITTED says the switch actually exists.
+bool padsPresent()
+{
+  if (!PAD_SWITCH_FITTED)
+    return true;
+
+  bool level = (digitalRead(PIN_PADS) == LOW);
+  bool present = PADS_PRESENT_IS_LOW ? level : !level;
+  uint32_t now = millis();
+
+  if (present != padsRaw)
+  {
+    padsRaw = present;
+    padsChangedMs = now;
+  }
+  else if (padsRaw != padsStable && (now - padsChangedMs) >= PAD_SWITCH_DEBOUNCE_MS)
+  {
+    padsStable = padsRaw;
+  }
+  return padsStable;
+}
+
 void rule()
 {
-  Serial.println(F("-----------------------------------------------------"));
+  LOGLN(F("-----------------------------------------------------"));
 }
 
 // void enterFault(const char *line2) {
@@ -618,9 +712,9 @@ void rule()
 //   say("OUT OF ORDER", line2);
 //   beep(TONE_FAULT_HZ, TONE_FAULT_MS);
 //   state = ST_FAULT;
-//   Serial.println();
-//   Serial.print(F("*** FAULT: ")); Serial.println(line2);
-//   Serial.println(F("*** Latched. Power-cycle, or type  x  to clear."));
+//   LOGLN();
+//   LOG(F("*** FAULT: ")); LOGLN(line2);
+//   LOGLN(F("*** Latched. Power-cycle, or type  x  to clear."));
 // }
 
 void enterFault(const char *line2)
@@ -635,11 +729,11 @@ void enterFault(const char *line2)
   faultRotateMs = 0; // force an immediate repaint
   beep(TONE_FAULT_HZ, TONE_FAULT_MS);
   state = ST_FAULT;
-  Serial.println();
-  Serial.print(F("*** FAULT: "));
-  Serial.println(line2);
-  Serial.println(F("*** Coins inhibited. Clear the chute, then hold the"));
-  Serial.println(F("*** front-panel button for 1 s, or type  x."));
+  LOGLN();
+  LOG(F("*** FAULT: "));
+  LOGLN(line2);
+  LOGLN(F("*** Coins inhibited. Clear the chute, then hold the"));
+  LOGLN(F("*** front-panel button for 1 s, or type  x."));
 }
 
 void showIdle()
@@ -653,13 +747,34 @@ void showIdle()
   say(l1, l2);
 }
 
+// Out of stock is NOT a fault. It is a normal condition with an obvious cure,
+// so it does not latch: the moment the switch says pads are back, the machine
+// returns to service on its own. Nobody drives out to reset it after a refill.
+void enterEmpty()
+{
+  coinAcceptorAllow(false);
+  state = ST_EMPTY;
+  emptyRotateMs = 0; // force an immediate repaint
+  emptyMsgIdx = 0;
+  beep(TONE_REJECT_HZ, TONE_REJECT_MS);
+  LOGLN();
+  LOGLN(F("*** OUT OF STOCK. The stock switch says the coil is empty."));
+  LOGLN(F("*** Coins inhibited. Refill and it comes back by itself."));
+  if (credit > 0)
+  {
+    LOG(F("*** KSH "));
+    LOG(credit);
+    LOGLN(F(" is still on the meter and will buy a pad on refill."));
+  }
+}
+
 void attemptClear(const char *who)
 {
   if (state != ST_FAULT)
   {
-    Serial.print(F("Clear requested by "));
-    Serial.print(who);
-    Serial.println(F(" but the machine is not faulted."));
+    LOG(F("Clear requested by "));
+    LOG(who);
+    LOGLN(F(" but the machine is not faulted."));
     return;
   }
 
@@ -677,9 +792,9 @@ void attemptClear(const char *who)
   {
     say("CLEAR THE CHUTE", "THEN HOLD AGAIN");
     beep(TONE_REJECT_HZ, TONE_REJECT_MS);
-    Serial.print(F("Refusing to clear ("));
-    Serial.print(who);
-    Serial.println(F("): the beam still reads BLOCKED."));
+    LOG(F("Refusing to clear ("));
+    LOG(who);
+    LOGLN(F("): the beam still reads BLOCKED."));
     faultRotateMs = millis() + MESSAGE_HOLD_MS; // let the message stand
     return;
   }
@@ -691,17 +806,17 @@ void attemptClear(const char *who)
   // only return to service if it now passes.
   if (!coinIsrAttached)
   {
-    Serial.println(F("Halted at boot — re-running the self-test before"));
-    Serial.println(F("returning this machine to service."));
+    LOGLN(F("Halted at boot — re-running the self-test before"));
+    LOGLN(F("returning this machine to service."));
     selfTestPassed = selfTest(true);
     if (!selfTestPassed)
     {
       say("STILL FAULTY", haltReason[0] ? haltReason : "SEE SERIAL");
       beep(TONE_REJECT_HZ, TONE_REJECT_MS);
-      Serial.print(F("Refusing to clear ("));
-      Serial.print(who);
-      Serial.println(F("): the self-test still fails."));
-      Serial.println(F("Coins stay inhibited. Fix it, then hold again."));
+      LOG(F("Refusing to clear ("));
+      LOG(who);
+      LOGLN(F("): the self-test still fails."));
+      LOGLN(F("Coins stay inhibited. Fix it, then hold again."));
       armClearButtonForNewFault();
       faultRotateMs = millis() + MESSAGE_HOLD_MS;
       return;
@@ -715,9 +830,9 @@ void attemptClear(const char *who)
   coinAcceptorAllow(true);
   beep(TONE_VEND_HZ, TONE_VEND_MS);
   showIdle();
-  Serial.print(F("Fault cleared by "));
-  Serial.println(who);
-  Serial.println(F("Credit zeroed, coins enabled."));
+  LOG(F("Fault cleared by "));
+  LOGLN(who);
+  LOGLN(F("Credit zeroed, coins enabled."));
 }
 
 void clearButtonService()
@@ -755,92 +870,92 @@ void clearButtonService()
 void reportCoin(uint16_t pulses, const CoinDef *coin, const CoinBurst *b = nullptr)
 {
   rule();
-  Serial.print(F("COIN IN      : "));
-  Serial.print(pulses);
-  Serial.println(pulses == 1 ? F(" pulse") : F(" pulses"));
+  LOG(F("COIN IN      : "));
+  LOG(pulses);
+  LOGLN(pulses == 1 ? F(" pulse") : F(" pulses"));
 
   // With a 40-pulse coin in the table, these two numbers are what decide
   // whether COIN_GAP_MS is safe, and there is no other way to see them.
   if (b && b->pulses > 1)
   {
-    Serial.print(F("PULSE TIMING : "));
-    Serial.print(b->durMs);
-    Serial.print(F(" ms burst, gaps "));
-    Serial.print(b->gapMin);
-    Serial.print(F("-"));
-    Serial.print(b->gapMax);
-    Serial.println(F(" ms"));
+    LOG(F("PULSE TIMING : "));
+    LOG(b->durMs);
+    LOG(F(" ms burst, gaps "));
+    LOG(b->gapMin);
+    LOG(F("-"));
+    LOG(b->gapMax);
+    LOGLN(F(" ms"));
 
     if ((uint32_t)b->gapMax * 2 > COIN_GAP_MS)
     {
-      Serial.print(F("  !! Widest gap is over half of COIN_GAP_MS ("));
-      Serial.print(COIN_GAP_MS);
-      Serial.println(F(" ms)."));
-      Serial.println(F("  !! This coin is close to being read as two, which"));
-      Serial.println(F("  !! would short-change the customer. Raise it with"));
-      Serial.println(F("  !! g<ms> — but stay under 600 ms or two coins in a"));
-      Serial.println(F("  !! row will merge into one unknown coin."));
+      LOG(F("  !! Widest gap is over half of COIN_GAP_MS ("));
+      LOG(COIN_GAP_MS);
+      LOGLN(F(" ms)."));
+      LOGLN(F("  !! This coin is close to being read as two, which"));
+      LOGLN(F("  !! would short-change the customer. Raise it with"));
+      LOGLN(F("  !! g<ms> — but stay under 600 ms or two coins in a"));
+      LOGLN(F("  !! row will merge into one unknown coin."));
     }
     if (b->gapMin < COIN_PULSE_DEBOUNCE_MS * 2)
     {
-      Serial.println(F("  !! Tightest gap is near the debounce floor. Pulses"));
-      Serial.println(F("  !! may be being merged. If counts read LOW, lower"));
-      Serial.println(F("  !! COIN_PULSE_DEBOUNCE_MS in SECTION 5."));
+      LOGLN(F("  !! Tightest gap is near the debounce floor. Pulses"));
+      LOGLN(F("  !! may be being merged. If counts read LOW, lower"));
+      LOGLN(F("  !! COIN_PULSE_DEBOUNCE_MS in SECTION 5."));
     }
   }
 
   if (!coin)
   {
-    Serial.println(F("RECOGNISED   : NO — this pulse count is not in the table"));
-    Serial.println(F("MEANING      : the acceptor took a coin this firmware"));
-    Serial.println(F("               cannot price. The customer has paid and"));
-    Serial.println(F("               is owed nothing until you fix SECTION 2."));
-    Serial.print(F("WILL VEND    : nothing. Add  { "));
-    Serial.print(pulses);
-    Serial.println(F(", <value>, \"<name>\" }  to COIN_TABLE."));
+    LOGLN(F("RECOGNISED   : NO — this pulse count is not in the table"));
+    LOGLN(F("MEANING      : the acceptor took a coin this firmware"));
+    LOGLN(F("               cannot price. The customer has paid and"));
+    LOGLN(F("               is owed nothing until you fix SECTION 2."));
+    LOG(F("WILL VEND    : nothing. Add  { "));
+    LOG(pulses);
+    LOGLN(F(", <value>, \"<name>\" }  to COIN_TABLE."));
     rule();
     return;
   }
 
-  Serial.print(F("RECOGNISED   : "));
-  Serial.print(coin->name);
-  Serial.print(F("  (worth KSH "));
-  Serial.print(coin->value);
-  Serial.println(F(")"));
+  LOG(F("RECOGNISED   : "));
+  LOG(coin->name);
+  LOG(F("  (worth KSH "));
+  LOG(coin->value);
+  LOGLN(F(")"));
 
-  Serial.print(F("CREDIT NOW   : KSH "));
-  Serial.print(credit);
-  Serial.print(F(" of KSH "));
-  Serial.println(PAD_PRICE);
+  LOG(F("CREDIT NOW   : KSH "));
+  LOG(credit);
+  LOG(F(" of KSH "));
+  LOGLN(PAD_PRICE);
 
   if (state != ST_IDLE)
   {
-    Serial.print(F("MEANING      : machine is "));
-    Serial.print(stateName(state));
-    Serial.println(F(" — coin logged, NOT banked"));
-    Serial.println(F("WILL VEND    : nothing. It never owes a pad it cannot"));
-    Serial.println(F("               deliver. This coin is not refundable."));
+    LOG(F("MEANING      : machine is "));
+    LOG(stateName(state));
+    LOGLN(F(" — coin logged, NOT banked"));
+    LOGLN(F("WILL VEND    : nothing. It never owes a pad it cannot"));
+    LOGLN(F("               deliver. This coin is not refundable."));
   }
   else if (credit < PAD_PRICE)
   {
-    Serial.print(F("MEANING      : short by KSH "));
-    Serial.println(PAD_PRICE - credit);
-    Serial.println(F("WILL VEND    : nothing yet — waiting for more"));
+    LOG(F("MEANING      : short by KSH "));
+    LOGLN(PAD_PRICE - credit);
+    LOGLN(F("WILL VEND    : nothing yet — waiting for more"));
   }
   else
   {
     uint16_t pads = KEEP_CHANGE_AS_CREDIT ? (credit / PAD_PRICE) : 1;
     uint16_t left = KEEP_CHANGE_AS_CREDIT ? (credit % PAD_PRICE) : 0;
-    Serial.println(F("MEANING      : price met"));
-    Serial.print(F("WILL VEND    : "));
-    Serial.print(pads);
-    Serial.println(pads == 1 ? F(" pad") : F(" pads, one after the other"));
-    Serial.print(F("LEFT OVER    : KSH "));
-    Serial.print(left);
+    LOGLN(F("MEANING      : price met"));
+    LOG(F("WILL VEND    : "));
+    LOG(pads);
+    LOGLN(pads == 1 ? F(" pad") : F(" pads, one after the other"));
+    LOG(F("LEFT OVER    : KSH "));
+    LOG(left);
     if (left > 0)
-      Serial.println(F("  (stays on the meter, no change given)"));
+      LOGLN(F("  (stays on the meter, no change given)"));
     else
-      Serial.println();
+      LOGLN();
   }
   rule();
 }
@@ -877,26 +992,26 @@ const char *resetReasonName()
 
 void i2cScan()
 {
-  Serial.println(F("  I2C bus scan:"));
+  LOGLN(F("  I2C bus scan:"));
   uint8_t found = 0;
   for (uint8_t a = 1; a < 127; a++)
   {
     if (i2cPresent(a))
     {
-      Serial.print(F("    device at 0x"));
+      LOG(F("    device at 0x"));
       if (a < 16)
-        Serial.print('0');
-      Serial.print(a, HEX);
+        LOG('0');
+      LOG(a, HEX);
       if (a == LCD_I2C_ADDR)
-        Serial.print(F("   <- LCD_I2C_ADDR"));
+        LOG(F("   <- LCD_I2C_ADDR"));
       else if (a == 0x27 || a == 0x3F)
-        Serial.print(F("   <- looks like an LCD backpack"));
-      Serial.println();
+        LOG(F("   <- looks like an LCD backpack"));
+      LOGLN();
       found++;
     }
   }
   if (!found)
-    Serial.println(F("    nothing responded. Check SDA/SCL and the LCD's 5 V."));
+    LOGLN(F("    nothing responded. Check SDA/SCL and the LCD's 5 V."));
 }
 
 // Returns false if something fatal was found.
@@ -905,36 +1020,36 @@ bool selfTest(bool verbose)
   bool ok = true;
   haltReason[0] = 0;
 
-  Serial.println();
+  LOGLN();
   rule();
-  Serial.println(F("SELF-TEST"));
+  LOGLN(F("SELF-TEST"));
   rule();
 
   // --- 1. Power, and why we are here ---
-  Serial.println(F("[1] POWER / RESET"));
-  Serial.print(F("  last reset  : "));
-  Serial.println(resetReasonName());
+  LOGLN(F("[1] POWER / RESET"));
+  LOG(F("  last reset  : "));
+  LOGLN(resetReasonName());
   if (esp_reset_reason() == ESP_RST_BROWNOUT)
   {
-    Serial.println(F("  !! A brownout means the motor is dragging the rail down."));
-    Serial.println(F("  !! That is what the 1000 uF across 12 V is for. Fit it."));
+    LOGLN(F("  !! A brownout means the motor is dragging the rail down."));
+    LOGLN(F("  !! That is what the 1000 uF across 12 V is for. Fit it."));
   }
   if (esp_reset_reason() == ESP_RST_PANIC || esp_reset_reason() == ESP_RST_TASK_WDT)
   {
-    Serial.println(F("  !! The firmware crashed last run. Say so when reporting it."));
+    LOGLN(F("  !! The firmware crashed last run. Say so when reporting it."));
   }
-  Serial.print(F("  free heap   : "));
-  Serial.print(ESP.getFreeHeap());
-  Serial.println(F(" bytes"));
-  Serial.print(F("  CPU         : "));
-  Serial.print(ESP.getCpuFreqMHz());
-  Serial.println(F(" MHz"));
+  LOG(F("  free heap   : "));
+  LOG(ESP.getFreeHeap());
+  LOGLN(F(" bytes"));
+  LOG(F("  CPU         : "));
+  LOG(ESP.getCpuFreqMHz());
+  LOGLN(F(" MHz"));
 
   // --- 2. Coin table sanity ---
-  Serial.println(F("[2] COIN TABLE"));
+  LOGLN(F("[2] COIN TABLE"));
   if (COIN_TABLE_LEN == 0)
   {
-    Serial.println(F("  FAIL: table is empty. Nothing can ever be paid for."));
+    LOGLN(F("  FAIL: table is empty. Nothing can ever be paid for."));
     strncpy(haltReason, "COIN TABLE EMPTY", sizeof(haltReason) - 1);
     ok = false;
   }
@@ -942,36 +1057,36 @@ bool selfTest(bool verbose)
   {
     if (verbose)
     {
-      Serial.print(F("  "));
-      Serial.print(COIN_TABLE[i].pulses);
-      Serial.print(COIN_TABLE[i].pulses == 1 ? F(" pulse  = ") : F(" pulses = "));
-      Serial.print(COIN_TABLE[i].name);
-      Serial.print(F("  (KSH "));
-      Serial.print(COIN_TABLE[i].value);
-      Serial.print(F(")"));
+      LOG(F("  "));
+      LOG(COIN_TABLE[i].pulses);
+      LOG(COIN_TABLE[i].pulses == 1 ? F(" pulse  = ") : F(" pulses = "));
+      LOG(COIN_TABLE[i].name);
+      LOG(F("  (KSH "));
+      LOG(COIN_TABLE[i].value);
+      LOG(F(")"));
       if (COIN_TABLE[i].value == PAD_PRICE)
-        Serial.print(F("   <- exact price"));
-      Serial.println();
+        LOG(F("   <- exact price"));
+      LOGLN();
     }
     if (COIN_TABLE[i].pulses == 0)
     {
-      Serial.println(F("  FAIL: a coin with 0 pulses can never be detected."));
+      LOGLN(F("  FAIL: a coin with 0 pulses can never be detected."));
       strncpy(haltReason, "BAD COIN TABLE", sizeof(haltReason) - 1);
       ok = false;
     }
     if (COIN_TABLE[i].value == 0)
     {
-      Serial.print(F("  WARN: "));
-      Serial.print(COIN_TABLE[i].name);
-      Serial.println(F(" is worth nothing. Deliberate?"));
+      LOG(F("  WARN: "));
+      LOG(COIN_TABLE[i].name);
+      LOGLN(F(" is worth nothing. Deliberate?"));
     }
     for (uint8_t j = i + 1; j < COIN_TABLE_LEN; j++)
     {
       if (COIN_TABLE[i].pulses == COIN_TABLE[j].pulses)
       {
-        Serial.print(F("  FAIL: two coins share "));
-        Serial.print(COIN_TABLE[i].pulses);
-        Serial.println(F(" pulses. They are indistinguishable."));
+        LOG(F("  FAIL: two coins share "));
+        LOG(COIN_TABLE[i].pulses);
+        LOGLN(F(" pulses. They are indistinguishable."));
         strncpy(haltReason, "DUPLICATE COINS", sizeof(haltReason) - 1);
         ok = false;
       }
@@ -988,151 +1103,189 @@ bool selfTest(bool verbose)
   }
   if (!reachable)
   {
-    Serial.print(F("  WARN: no coin divides KSH "));
-    Serial.print(PAD_PRICE);
-    Serial.println(F(" exactly. Customers will always overpay."));
+    LOG(F("  WARN: no coin divides KSH "));
+    LOG(PAD_PRICE);
+    LOGLN(F(" exactly. Customers will always overpay."));
   }
-  Serial.print(F("  price       : KSH "));
-  Serial.println(PAD_PRICE);
-  Serial.print(F("  change      : "));
-  Serial.println(KEEP_CHANGE_AS_CREDIT ? F("kept on the meter")
+  LOG(F("  price       : KSH "));
+  LOGLN(PAD_PRICE);
+  LOG(F("  change      : "));
+  LOGLN(KEEP_CHANGE_AS_CREDIT ? F("kept on the meter")
                                        : F("FORFEIT — bench setting only"));
 
   // --- 3. Pulse decoding sanity ---
-  Serial.println(F("[3] PULSE DECODING"));
-  Serial.print(F("  debounce    : "));
-  Serial.print(COIN_PULSE_DEBOUNCE_MS);
-  Serial.println(F(" ms"));
-  Serial.print(F("  coin gap    : "));
-  Serial.print(COIN_GAP_MS);
-  Serial.println(F(" ms"));
+  LOGLN(F("[3] PULSE DECODING"));
+  LOG(F("  debounce    : "));
+  LOG(COIN_PULSE_DEBOUNCE_MS);
+  LOGLN(F(" ms"));
+  LOG(F("  coin gap    : "));
+  LOG(COIN_GAP_MS);
+  LOGLN(F(" ms"));
   if (COIN_GAP_MS <= COIN_PULSE_DEBOUNCE_MS * 2)
   {
-    Serial.println(F("  FAIL: gap is too close to the debounce. One coin will be"));
-    Serial.println(F("        read as several. Raise COIN_GAP_MS."));
+    LOGLN(F("  FAIL: gap is too close to the debounce. One coin will be"));
+    LOGLN(F("        read as several. Raise COIN_GAP_MS."));
     strncpy(haltReason, "BAD PULSE TIMING", sizeof(haltReason) - 1);
     ok = false;
   }
-  Serial.print(F("  coin line   : GPIO "));
-  Serial.print(PIN_COIN);
-  Serial.print(F(" reads "));
-  Serial.println(digitalRead(PIN_COIN) == HIGH ? F("HIGH (idle, correct)")
+  LOG(F("  coin line   : GPIO "));
+  LOG(PIN_COIN);
+  LOG(F(" reads "));
+  LOGLN(digitalRead(PIN_COIN) == HIGH ? F("HIGH (idle, correct)")
                                                : F("LOW  <- stuck, or acceptor is pulling it"));
   if (digitalRead(PIN_COIN) == LOW)
   {
-    Serial.println(F("  !! A permanently LOW coin line means no coin will ever"));
-    Serial.println(F("  !! register a falling edge. Check the wiring first."));
+    LOGLN(F("  !! A permanently LOW coin line means no coin will ever"));
+    LOGLN(F("  !! register a falling edge. Check the wiring first."));
   }
 
   // --- 4. I2C and the screen ---
-  Serial.println(F("[4] SCREEN"));
+  LOGLN(F("[4] SCREEN"));
   i2cScan();
   lcdOk = i2cPresent(LCD_I2C_ADDR);
-  Serial.print(F("  LCD at 0x"));
-  Serial.print(LCD_I2C_ADDR, HEX);
-  Serial.println(lcdOk ? F("  : present") : F("  : NOT FOUND"));
+  LOG(F("  LCD at 0x"));
+  LOG(LCD_I2C_ADDR, HEX);
+  LOGLN(lcdOk ? F("  : present") : F("  : NOT FOUND"));
   if (!lcdOk)
   {
-    Serial.println(F("  Running headless. The machine still vends, but the"));
-    Serial.println(F("  customer is told nothing. Fix before any demo."));
-    Serial.println(F("  Try the other address the scan found, in SECTION 4."));
+    LOGLN(F("  Running headless. The machine still vends, but the"));
+    LOGLN(F("  customer is told nothing. Fix before any demo."));
+    LOGLN(F("  Try the other address the scan found, in SECTION 4."));
   }
 
   // --- 5. IR beam ---
-  Serial.println(F("[5] IR DROP SENSOR"));
+  LOGLN(F("[5] IR DROP SENSOR"));
   irRaw = irStable = false;
   uint32_t t0 = millis();
   while (millis() - t0 < 200)
     padSeen();
-  Serial.print(F("  GPIO "));
-  Serial.print(PIN_IR);
-  Serial.print(F(" raw   : "));
-  Serial.println(digitalRead(PIN_IR) == LOW ? F("LOW") : F("HIGH"));
-  Serial.print(F("  polarity    : detected = "));
-  Serial.println(IR_DETECTED_IS_LOW ? F("LOW") : F("HIGH"));
-  Serial.print(F("  chute reads : "));
-  Serial.println(irStable ? F("BLOCKED  <- problem") : F("clear    (correct when empty)"));
+  LOG(F("  GPIO "));
+  LOG(PIN_IR);
+  LOG(F(" raw   : "));
+  LOGLN(digitalRead(PIN_IR) == LOW ? F("LOW") : F("HIGH"));
+  LOG(F("  polarity    : detected = "));
+  LOGLN(IR_DETECTED_IS_LOW ? F("LOW") : F("HIGH"));
+  LOG(F("  chute reads : "));
+  LOGLN(irStable ? F("BLOCKED  <- problem") : F("clear    (correct when empty)"));
   // if (irStable)
   // {
-  //   Serial.println(F("  A blocked chute at rest is one of three things:"));
-  //   Serial.println(F("    - IR_DETECTED_IS_LOW is the wrong way round"));
-  //   Serial.println(F("    - the sensor is aimed at nothing, or at the far wall"));
-  //   Serial.println(F("    - there is genuinely a pad stuck in the chute"));
-  //   Serial.println(F("  Use  i  to watch it live and wave your hand through."));
+  //   LOGLN(F("  A blocked chute at rest is one of three things:"));
+  //   LOGLN(F("    - IR_DETECTED_IS_LOW is the wrong way round"));
+  //   LOGLN(F("    - the sensor is aimed at nothing, or at the far wall"));
+  //   LOGLN(F("    - there is genuinely a pad stuck in the chute"));
+  //   LOGLN(F("  Use  i  to watch it live and wave your hand through."));
   // }
 
   if (irStable)
   {
-    Serial.println(F("  FAIL: chute is BLOCKED at startup."));
-    Serial.println(F("  Clear the chute and verify IR polarity/aiming."));
+    LOGLN(F("  FAIL: chute is BLOCKED at startup."));
+    LOGLN(F("  Clear the chute and verify IR polarity/aiming."));
     strncpy(haltReason, "CHUTE BLOCKED", sizeof(haltReason) - 1);
     ok = false;
   }
 
   // --- 6. Relay and motor ---
-  Serial.println(F("[6] RELAY / MOTOR"));
-  Serial.print(F("  GPIO "));
-  Serial.print(PIN_RELAY);
-  Serial.print(F(", active "));
-  Serial.println(RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
-  Serial.print(F("  dispense timeout : "));
-  Serial.print(DISPENSE_TIMEOUT_MS);
-  Serial.println(F(" ms"));
-  Serial.print(F("  hard motor limit : "));
-  Serial.print(motorHardLimitMs());
-  Serial.println(F(" ms"));
-  Serial.println(F("  Confirm the 10k pull-down on the relay pin is fitted."));
+  LOGLN(F("[6] RELAY / MOTOR"));
+  LOG(F("  GPIO "));
+  LOG(PIN_RELAY);
+  LOG(F(", active "));
+  LOGLN(RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
+  LOG(F("  dispense timeout : "));
+  LOG(DISPENSE_TIMEOUT_MS);
+  LOGLN(F(" ms"));
+  LOG(F("  hard motor limit : "));
+  LOG(motorHardLimitMs());
+  LOGLN(F(" ms"));
+  LOGLN(F("  Confirm the 10k pull-down on the relay pin is fitted."));
   if (SELFTEST_CLICKS_RELAY)
   {
-    Serial.println(F("  Clicking the relay now — you should hear one click."));
+    LOGLN(F("  Clicking the relay now — you should hear one click."));
     motorOn();
     delay(120);
     motorOff();
   }
   else
   {
-    Serial.println(F("  Not clicking it. Set SELFTEST_CLICKS_RELAY once the"));
-    Serial.println(F("  motor is disconnected, or just use  m500."));
+    LOGLN(F("  Not clicking it. Set SELFTEST_CLICKS_RELAY once the"));
+    LOGLN(F("  motor is disconnected, or just use  m500."));
   }
 
   // added during the additions of the jamming relay switch
-  Serial.println(F("[7] COIN INHIBIT / CLEAR BUTTON"));
-  Serial.print(F("  inhibit pin : GPIO "));
-  Serial.print(PIN_INHIBIT);
-  Serial.print(F(", active "));
-  Serial.println(INHIBIT_RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
-  Serial.print(F("  contact     : "));
+  LOGLN(F("[7] COIN INHIBIT / CLEAR BUTTON"));
+  LOG(F("  inhibit pin : GPIO "));
+  LOG(PIN_INHIBIT);
+  LOG(F(", active "));
+  LOGLN(INHIBIT_RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
+  if (!INHIBIT_RELAY_ACTIVE_HIGH)
+  {
+    LOG(F("  Active LOW, so GPIO "));
+    LOG(PIN_INHIBIT);
+    LOGLN(F(" needs a 10k pull-UP to 3V3,"));
+    LOGLN(F("  not a pull-down. The pin floats until setup() runs; held low"));
+    LOGLN(F("  through that window the relay energises, the NC contact opens,"));
+    LOGLN(F("  and the slot is live every time you reset. Watch for a click"));
+    LOGLN(F("  through one reset with the acceptor connected before you ship."));
+  }
+  LOG(F("  contact     : "));
   if (INHIBIT_CONTACT_IS_NC)
   {
-    Serial.println(F("NC — fail-safe, inhibited when unpowered"));
+    LOGLN(F("NC — fail-safe, inhibited when unpowered"));
   }
   else
   {
-    Serial.println(F("NO  <- NOT fail-safe"));
-    Serial.println(F("  !! A dead board will accept coins and deliver nothing."));
-    Serial.println(F("  !! Move to the NC contact before this leaves the bench."));
+    LOGLN(F("NO  <- NOT fail-safe"));
+    LOGLN(F("  !! A dead board will accept coins and deliver nothing."));
+    LOGLN(F("  !! Move to the NC contact before this leaves the bench."));
   }
-  Serial.print(F("  coins now   : "));
-  Serial.println(coinsAllowed ? F("enabled") : F("inhibited"));
-  Serial.print(F("  clear button: GPIO "));
-  Serial.print(PIN_CLEAR);
-  Serial.print(F(" reads "));
-  Serial.println(digitalRead(PIN_CLEAR) == HIGH ? F("HIGH (released, correct)")
+  LOG(F("  coins now   : "));
+  LOGLN(coinsAllowed ? F("enabled") : F("inhibited"));
+  LOG(F("  clear button: GPIO "));
+  LOG(PIN_CLEAR);
+  LOG(F(" reads "));
+  LOGLN(digitalRead(PIN_CLEAR) == HIGH ? F("HIGH (released, correct)")
                                                 : F("LOW  <- held, shorted, or miswired"));
   if (digitalRead(PIN_CLEAR) == LOW)
   {
-    Serial.println(F("  !! Held, shorted, or wired backwards. It will never"));
-    Serial.println(F("  !! register a fresh press like this, so it cannot"));
-    Serial.println(F("  !! clear a real fault. Use  x  until it's fixed."));
+    LOGLN(F("  !! Held, shorted, or wired backwards. It will never"));
+    LOGLN(F("  !! register a fresh press like this, so it cannot"));
+    LOGLN(F("  !! clear a real fault. Use  x  until it's fixed."));
   }
 
-  // --- 8. Buzzer ---
-  Serial.println(F("[8] BUZZER"));
-  Serial.println(F("  One short chirp now. Silence means check GPIO 25."));
+  LOGLN(F("[8] PAD STOCK SWITCH"));
+  if (!PAD_SWITCH_FITTED)
+  {
+    LOGLN(F("  BYPASSED — PAD_SWITCH_FITTED is false in SECTION 4."));
+    LOGLN(F("  This machine can never report itself empty. Set it true"));
+    LOGLN(F("  once the switch is wired, or it will keep taking money"));
+    LOGLN(F("  over an empty coil."));
+  }
+  else
+  {
+    LOG(F("  GPIO "));
+    LOG(PIN_PADS);
+    LOG(F(" reads "));
+    LOGLN(digitalRead(PIN_PADS) == LOW ? F("LOW") : F("HIGH"));
+    LOG(F("  polarity    : pads present = "));
+    LOGLN(PADS_PRESENT_IS_LOW ? F("LOW (switch closed to GND)")
+                                       : F("HIGH (switch open)"));
+    LOG(F("  stock reads : "));
+    LOGLN(padsPresent() ? F("PADS PRESENT") : F("EMPTY  <- check this"));
+    if (!padsPresent())
+    {
+      LOGLN(F("  The machine will boot straight into OUT OF STOCK and"));
+      LOGLN(F("  refuse coins. If the coil is actually loaded then the"));
+      LOGLN(F("  switch is open, miswired, or PADS_PRESENT_IS_LOW is"));
+      LOGLN(F("  inverted. Use  k  to watch it while you work the lever."));
+    }
+  }
+
+  // --- 9. Buzzer ---
+  LOGLN(F("[9] BUZZER"));
+  LOGLN(F("  One short chirp now. Silence means check GPIO 25."));
   beep(TONE_COIN_HZ, TONE_COIN_MS);
 
   rule();
-  Serial.println(ok ? F("SELF-TEST: PASS")
+  LOGLN(ok ? F("SELF-TEST: PASS")
                     : F("SELF-TEST: FAIL — see the lines marked FAIL"));
   rule();
   return ok;
@@ -1144,108 +1297,115 @@ bool selfTest(bool verbose)
 void printHelp()
 {
   rule();
-  Serial.println(F("COMMANDS"));
+  LOGLN(F("COMMANDS"));
   rule();
-  Serial.println(F("  ?        this list"));
-  Serial.println(F("  s        status — state, credit, counters, loop health"));
-  Serial.println(F("  d        run the full self-test again"));
-  Serial.println(F("  c        print the coin table"));
-  Serial.println(F("  z        scan the I2C bus"));
-  Serial.println();
-  Serial.println(F("  CALIBRATION (lost on reset — write the value into CONFIG)"));
-  Serial.println(F("  p<ksh>   set the pad price          e.g.  p20"));
-  Serial.println(F("  g<ms>    set the coin gap           e.g.  g250"));
-  Serial.println(F("  o<ms>    set the dispense timeout   e.g.  o3000"));
-  Serial.println();
-  Serial.println(F("  BENCH TESTS"));
-  Serial.println(F("  m<ms>    run the motor for <ms> — time one revolution"));
-  Serial.println(F("  t        full test vend, no coin needed"));
-  Serial.println(F("  v<n>     pretend a coin of <n> pulses went in"));
-  Serial.println(F("  i        watch the IR sensor live (any key stops it)"));
-  Serial.println(F("  l        LCD test pattern"));
-  Serial.println(F("  b        buzzer test"));
-  Serial.println();
-  Serial.println(F("  x        clear a latched fault"));
-  Serial.println(F("           (or hold the front-panel button for 1 s)"));
-  Serial.println(F("  r        zero the session counters"));
-  Serial.println(F("  h        toggle the heartbeat line"));
+  LOGLN(F("  ?        this list"));
+  LOGLN(F("  s        status — state, credit, counters, loop health"));
+  LOGLN(F("  d        run the full self-test again"));
+  LOGLN(F("  c        print the coin table"));
+  LOGLN(F("  z        scan the I2C bus"));
+  LOGLN();
+  LOGLN(F("  CALIBRATION (lost on reset — write the value into CONFIG)"));
+  LOGLN(F("  p<ksh>   set the pad price          e.g.  p20"));
+  LOGLN(F("  g<ms>    set the coin gap           e.g.  g250"));
+  LOGLN(F("  o<ms>    set the dispense timeout   e.g.  o3000"));
+  LOGLN();
+  LOGLN(F("  BENCH TESTS"));
+  LOGLN(F("  m<ms>    run the motor for <ms> — time one revolution"));
+  LOGLN(F("  t        full test vend, no coin needed"));
+  LOGLN(F("  v<n>     pretend a coin of <n> pulses went in"));
+  LOGLN(F("  i        watch the IR sensor live (any key stops it)"));
+  LOGLN(F("  k        watch the pad stock switch live"));
+  LOGLN(F("  l        LCD test pattern"));
+  LOGLN(F("  b        buzzer test"));
+  LOGLN();
+  LOGLN(F("  x        clear a latched fault"));
+  LOGLN(F("           (or hold the front-panel button for 1 s)"));
+  LOGLN(F("  r        zero the session counters"));
+  LOGLN(F("  h        toggle the heartbeat line"));
+  LOGLN(F("  L        toggle event logging (off for field installs)"));
   rule();
 }
 
 void printCoinTable()
 {
   rule();
-  Serial.println(F("COIN TABLE — edit SECTION 2 to change it"));
+  LOGLN(F("COIN TABLE — edit SECTION 2 to change it"));
   rule();
   for (uint8_t i = 0; i < COIN_TABLE_LEN; i++)
   {
-    Serial.print(F("  "));
-    Serial.print(COIN_TABLE[i].pulses);
-    Serial.print(COIN_TABLE[i].pulses == 1 ? F(" pulse  -> ") : F(" pulses -> "));
-    Serial.print(COIN_TABLE[i].name);
-    Serial.print(F("  = KSH "));
-    Serial.print(COIN_TABLE[i].value);
+    LOG(F("  "));
+    LOG(COIN_TABLE[i].pulses);
+    LOG(COIN_TABLE[i].pulses == 1 ? F(" pulse  -> ") : F(" pulses -> "));
+    LOG(COIN_TABLE[i].name);
+    LOG(F("  = KSH "));
+    LOG(COIN_TABLE[i].value);
     if (COIN_TABLE[i].value >= PAD_PRICE)
     {
-      Serial.print(F("   buys a pad outright"));
+      LOG(F("   buys a pad outright"));
     }
     else if (COIN_TABLE[i].value > 0 && PAD_PRICE % COIN_TABLE[i].value == 0)
     {
-      Serial.print(F("   x"));
-      Serial.print(PAD_PRICE / COIN_TABLE[i].value);
-      Serial.print(F(" buys a pad"));
+      LOG(F("   x"));
+      LOG(PAD_PRICE / COIN_TABLE[i].value);
+      LOG(F(" buys a pad"));
     }
-    Serial.println();
+    LOGLN();
   }
-  Serial.print(F("  PRICE: KSH "));
-  Serial.println(PAD_PRICE);
+  LOG(F("  PRICE: KSH "));
+  LOGLN(PAD_PRICE);
   rule();
 }
 
 void printStatus()
 {
   rule();
-  Serial.println(F("STATUS"));
+  LOGLN(F("STATUS"));
   rule();
-  Serial.print(F("  firmware     : v"));
-  Serial.println(F(FW_VERSION));
-  Serial.print(F("  state        : "));
-  Serial.println(stateName(state));
-  Serial.print(F("  credit       : KSH "));
-  Serial.print(credit);
-  Serial.print(F(" of KSH "));
-  Serial.println(PAD_PRICE);
-  Serial.print(F("  motor        : "));
-  Serial.println(motorRunning ? F("RUNNING") : F("off"));
-  Serial.print(F("  chute beam   : "));
-  Serial.println(irStable ? F("BLOCKED") : F("clear"));
-  Serial.print(F("  screen       : "));
-  Serial.println(lcdOk ? F("ok") : F("MISSING — headless"));
-  Serial.println();
-  Serial.print(F("  vends        : "));
-  Serial.println(vendCount);
-  Serial.print(F("  coins ok     : "));
-  Serial.println(coinsAccepted);
-  Serial.print(F("  coins unknown: "));
-  Serial.println(coinsUnknown);
-  Serial.print(F("  taken        : KSH "));
-  Serial.println(shillingsIn);
-  Serial.print(F("  faults       : "));
-  Serial.println(faultCount);
-  Serial.print(F("  raw pulses   : "));
-  Serial.println(isrTotal);
-  Serial.println();
-  Serial.print(F("  uptime       : "));
-  Serial.print((millis() - bootMs) / 1000);
-  Serial.println(F(" s"));
-  Serial.print(F("  free heap    : "));
-  Serial.println(ESP.getFreeHeap());
-  Serial.print(F("  loop max     : "));
-  Serial.print(loopMaxUs);
-  Serial.println(F(" us"));
-  Serial.println(F("  (loop max over ~50000 us means I2C is stalling)"));
-  Serial.print(F("  coin acceptor: "));
-  Serial.println(coinsAllowed ? F("enabled") : F("INHIBITED"));
+  LOG(F("  firmware     : v"));
+  LOGLN(F(FW_VERSION));
+  LOG(F("  state        : "));
+  LOGLN(stateName(state));
+  LOG(F("  credit       : KSH "));
+  LOG(credit);
+  LOG(F(" of KSH "));
+  LOGLN(PAD_PRICE);
+  LOG(F("  motor        : "));
+  LOGLN(motorRunning ? F("RUNNING") : F("off"));
+  LOG(F("  chute beam   : "));
+  LOGLN(irStable ? F("BLOCKED") : F("clear"));
+  LOG(F("  pad stock    : "));
+  if (!PAD_SWITCH_FITTED)
+    LOGLN(F("switch not fitted — check bypassed"));
+  else
+    LOGLN(padsPresent() ? F("PADS PRESENT") : F("EMPTY"));
+  LOG(F("  screen       : "));
+  LOGLN(lcdOk ? F("ok") : F("MISSING — headless"));
+  LOGLN();
+  LOG(F("  vends        : "));
+  LOGLN(vendCount);
+  LOG(F("  coins ok     : "));
+  LOGLN(coinsAccepted);
+  LOG(F("  coins unknown: "));
+  LOGLN(coinsUnknown);
+  LOG(F("  taken        : KSH "));
+  LOGLN(shillingsIn);
+  LOG(F("  faults       : "));
+  LOGLN(faultCount);
+  LOG(F("  raw pulses   : "));
+  LOGLN(isrTotal);
+  LOGLN();
+  LOG(F("  uptime       : "));
+  LOG((millis() - bootMs) / 1000);
+  LOGLN(F(" s"));
+  LOG(F("  free heap    : "));
+  LOGLN(ESP.getFreeHeap());
+  LOG(F("  loop max     : "));
+  LOG(loopMaxUs);
+  LOGLN(F(" us"));
+  LOGLN(F("  (loop max over ~50000 us means I2C is stalling)"));
+  LOG(F("  coin acceptor: "));
+  LOGLN(coinsAllowed ? F("enabled") : F("INHIBITED"));
   rule();
 }
 
@@ -1253,12 +1413,12 @@ void runMotorFor(uint32_t ms)
 {
   if (ms == 0 || ms > 10000)
   {
-    Serial.println(F("Refusing. Use 1 to 10000 ms."));
+    LOGLN(F("Refusing. Use 1 to 10000 ms."));
     return;
   }
-  Serial.print(F("Motor ON for "));
-  Serial.print(ms);
-  Serial.println(F(" ms..."));
+  LOG(F("Motor ON for "));
+  LOG(ms);
+  LOGLN(F(" ms..."));
   say("MOTOR TEST", "");
   uint32_t t0 = millis();
   motorOn();
@@ -1268,19 +1428,19 @@ void runMotorFor(uint32_t ms)
     if (padSeen() && !broke)
     {
       broke = true;
-      Serial.print(F("  beam broken at "));
-      Serial.print(millis() - t0);
-      Serial.println(F(" ms"));
+      LOG(F("  beam broken at "));
+      LOG(millis() - t0);
+      LOGLN(F(" ms"));
     }
     buzzerService();
     delay(1); // this can run for ten seconds; give the watchdog its turn
   }
   motorOff();
-  Serial.println(F("Motor OFF."));
+  LOGLN(F("Motor OFF."));
   if (!broke)
-    Serial.println(F("  beam never broke during the run"));
-  Serial.println(F("Time one full revolution this way, then set"));
-  Serial.println(F("DISPENSE_TIMEOUT_MS to about double it  (o<ms>)."));
+    LOGLN(F("  beam never broke during the run"));
+  LOGLN(F("Time one full revolution this way, then set"));
+  LOGLN(F("DISPENSE_TIMEOUT_MS to about double it  (o<ms>)."));
   showIdle();
 }
 
@@ -1303,13 +1463,13 @@ bool startVend(const char *why)
   }
   if (!clear)
   {
-    Serial.println(F("Refusing to start: the beam already reads BLOCKED."));
+    LOGLN(F("Refusing to start: the beam already reads BLOCKED."));
     enterFault("CHECK SENSOR");
     return false;
   }
   say("DISPENSING...", "");
-  Serial.print(F("Motor on — "));
-  Serial.println(why);
+  LOG(F("Motor on — "));
+  LOGLN(why);
   coinAcceptorAllow(false); // physically refuse coins mid-vend
   motorOn();
   dispenseStartMs = millis();
@@ -1322,12 +1482,21 @@ void handleCommand(char *s)
   char c = s[0];
   long n = (strlen(s) > 1) ? atol(s + 1) : -1;
 
-  // Any command other than 'i' itself stops the IR watch, so its chatter
-  // never buries the answer you just asked for.
+  // A typed command always gets an answer, even on a machine installed with
+  // event logging off. Put back to the configured level on the way out.
+  logOn = true;
+
+  // Any command other than the watch itself stops a running watch, so its
+  // chatter never buries the answer you just asked for.
   if (irWatch && c != 'i')
   {
     irWatch = false;
-    Serial.println(F("IR watch off."));
+    LOGLN(F("IR watch off."));
+  }
+  if (stockWatch && c != 'k')
+  {
+    stockWatch = false;
+    LOGLN(F("Stock watch off."));
   }
 
   switch (c)
@@ -1338,8 +1507,8 @@ void handleCommand(char *s)
 
   case 'h':
     heartbeatOn = !heartbeatOn;
-    Serial.print(F("Heartbeat "));
-    Serial.println(heartbeatOn ? F("ON") : F("off"));
+    LOG(F("Heartbeat "));
+    LOGLN(heartbeatOn ? F("ON") : F("off"));
     break;
 
   case 's':
@@ -1356,25 +1525,45 @@ void handleCommand(char *s)
     showIdle();
     break;
   case 'b':
-    Serial.println(F("Chirp."));
+    LOGLN(F("Chirp."));
     beep(TONE_VEND_HZ, TONE_VEND_MS);
     break;
 
   case 'l':
     if (!lcdOk)
     {
-      Serial.println(F("No LCD found. Run  z  to scan."));
+      LOGLN(F("No LCD found. Run  z  to scan."));
       break;
     }
-    Serial.println(F("LCD: both lines filled, then back to idle."));
+    LOGLN(F("LCD: both lines filled, then back to idle."));
     say("0123456789ABCDEF", "BRICAPA  v" FW_VERSION);
     holdFor(2000);
     showIdle();
     break;
 
+  case 'L':
+    logEvents = !logEvents;
+    LOG(F("Event logging "));
+    LOGLN(logEvents ? F("ON")
+                             : F("OFF - typed commands still answer in full"));
+    LOGLN(F("Not saved. Set SERIAL_LOG_DEFAULT in SECTION 7 to keep it."));
+    break;
+
+  case 'k':
+    if (!PAD_SWITCH_FITTED)
+    {
+      LOGLN(F("Stock switch is bypassed (PAD_SWITCH_FITTED is false)."));
+      LOGLN(F("Set it true in SECTION 4 once the switch is wired."));
+      break;
+    }
+    stockWatch = !stockWatch;
+    LOGLN(stockWatch ? F("Stock watch ON - work the switch lever.")
+                              : F("Stock watch off."));
+    break;
+
   case 'i':
     irWatch = !irWatch;
-    Serial.println(irWatch ? F("IR watch ON — wave a pad through the chute.")
+    LOGLN(irWatch ? F("IR watch ON — wave a pad through the chute.")
                            : F("IR watch off."));
     break;
 
@@ -1386,62 +1575,64 @@ void handleCommand(char *s)
     vendCount = coinsAccepted = coinsUnknown = faultCount = shillingsIn = 0;
     isrTotal = 0;
     loopMaxUs = 0;
-    Serial.println(F("Counters zeroed."));
+    LOGLN(F("Counters zeroed."));
     break;
 
   case 'p':
     if (n <= 0 || n > 1000)
     {
-      Serial.println(F("Use p1 to p1000."));
+      LOGLN(F("Use p1 to p1000."));
       break;
     }
     PAD_PRICE = (uint16_t)n;
-    Serial.print(F("Price is now KSH "));
-    Serial.println(PAD_PRICE);
-    Serial.println(F("Not saved. Put it in SECTION 3 to keep it."));
+    LOG(F("Price is now KSH "));
+    LOGLN(PAD_PRICE);
+    LOGLN(F("Not saved. Put it in SECTION 3 to keep it."));
     showIdle();
     break;
 
   case 'g':
     if (n <= 0 || n > 3000)
     {
-      Serial.println(F("Use g1 to g3000."));
+      LOGLN(F("Use g1 to g3000."));
       break;
     }
     COIN_GAP_MS = (uint32_t)n;
-    Serial.print(F("Coin gap is now "));
-    Serial.print(COIN_GAP_MS);
-    Serial.println(F(" ms"));
+    LOG(F("Coin gap is now "));
+    LOG(COIN_GAP_MS);
+    LOGLN(F(" ms"));
     if (COIN_GAP_MS <= COIN_PULSE_DEBOUNCE_MS * 2)
-      Serial.println(F("WARNING: that is too close to the debounce."));
-    Serial.println(F("Not saved. Put it in SECTION 5 to keep it."));
+      LOGLN(F("WARNING: that is too close to the debounce."));
+    LOGLN(F("Not saved. Put it in SECTION 5 to keep it."));
     break;
 
   case 'o':
     if (n <= 0 || n > 30000)
     {
-      Serial.println(F("Use o1 to o30000."));
+      LOGLN(F("Use o1 to o30000."));
       break;
     }
     DISPENSE_TIMEOUT_MS = (uint32_t)n;
-    Serial.print(F("Dispense timeout is now "));
-    Serial.print(DISPENSE_TIMEOUT_MS);
-    Serial.println(F(" ms"));
-    Serial.print(F("Hard motor limit follows it at "));
-    Serial.print(motorHardLimitMs());
-    Serial.println(F(" ms"));
-    Serial.println(F("Not saved. Put it in SECTION 5 to keep it."));
+    LOG(F("Dispense timeout is now "));
+    LOG(DISPENSE_TIMEOUT_MS);
+    LOGLN(F(" ms"));
+    LOG(F("Hard motor limit follows it at "));
+    LOG(motorHardLimitMs());
+    LOGLN(F(" ms"));
+    LOGLN(F("Not saved. Put it in SECTION 5 to keep it."));
     break;
 
   case 'm':
     if (state == ST_FAULT)
     {
-      Serial.println(F("Faulted. Clear with  x  first."));
+      LOGLN(F("Faulted. Clear with  x  first."));
       break;
     }
-    if (state != ST_IDLE)
+    // Deliberately allowed while EMPTY: this is a raw bench test for timing a
+    // revolution, and an empty coil is exactly when you want to run it.
+    if (state != ST_IDLE && state != ST_EMPTY)
     {
-      Serial.println(F("Busy. Wait for IDLE."));
+      LOGLN(F("Busy. Wait for IDLE."));
       break;
     }
     runMotorFor(n < 0 ? 500 : (uint32_t)n);
@@ -1450,15 +1641,15 @@ void handleCommand(char *s)
   case 't':
     if (state == ST_FAULT)
     {
-      Serial.println(F("Faulted. Clear with  x  first."));
+      LOGLN(F("Faulted. Clear with  x  first."));
       break;
     }
     if (state != ST_IDLE)
     {
-      Serial.println(F("Busy. Wait for IDLE."));
+      LOGLN(F("Busy. Wait for IDLE."));
       break;
     }
-    Serial.println(F("Test vend — no coin taken, no money counted."));
+    LOGLN(F("Test vend — no coin taken, no money counted."));
     startVend("test vend from console");
     break;
 
@@ -1466,12 +1657,12 @@ void handleCommand(char *s)
   {
     if (n <= 0)
     {
-      Serial.println(F("Use v1, v2, ... to fake a coin."));
+      LOGLN(F("Use v1, v2, ... to fake a coin."));
       break;
     }
-    Serial.print(F("Simulating a "));
-    Serial.print(n);
-    Serial.println(F("-pulse coin."));
+    LOG(F("Simulating a "));
+    LOG(n);
+    LOGLN(F("-pulse coin."));
     const CoinDef *coin = lookupCoin((uint16_t)n);
     if (coin && state == ST_IDLE)
     {
@@ -1491,10 +1682,12 @@ void handleCommand(char *s)
   }
 
   default:
-    Serial.print(F("Unknown command '"));
-    Serial.print(s);
-    Serial.println(F("'. Type ? for the list."));
+    LOG(F("Unknown command '"));
+    LOG(s);
+    LOGLN(F("'. Type ? for the list."));
   }
+
+  logOn = logEvents;
 }
 
 void pollSerial()
@@ -1542,17 +1735,33 @@ void setup()
   delay(300);
   bootMs = millis();
 
-  Serial.println();
+  // The banner and the self-test always print, whatever SECTION 7 says. A
+  // reset in the field has to tell a service visit what it needs to know.
+  logEvents = SERIAL_LOG_DEFAULT;
+  logOn = true;
+
+  LOGLN();
   rule();
-  Serial.println(F("  BRICAPA PAD DISPENSER  -  prototype firmware v" FW_VERSION));
-  Serial.println(F("  Ref BT-PADVEND-2026-001"));
+  LOGLN(F("  BRICAPA PAD DISPENSER  -  prototype firmware v" FW_VERSION));
+  LOGLN(F("  Ref BT-PADVEND-2026-001"));
   rule();
-  Serial.println(F("  Type ? for commands. Nothing is saved to flash."));
+  LOGLN(F("  Type ? for commands. Nothing is saved to flash."));
   rule();
 
   pinMode(PIN_COIN, INPUT_PULLUP);
   pinMode(PIN_CLEAR, INPUT_PULLUP);
   pinMode(PIN_IR, INPUT);
+  pinMode(PIN_PADS, INPUT_PULLUP);
+
+  // Prime the stock debouncer from the real pin so the machine does not
+  // announce a state change it never actually made on the first pass.
+  delay(5);
+  {
+    bool lvl = (digitalRead(PIN_PADS) == LOW);
+    padsRaw = padsStable = PAD_SWITCH_FITTED
+                               ? (PADS_PRESENT_IS_LOW ? lvl : !lvl)
+                               : true;
+  }
 
   buzzerInit();
 
@@ -1570,11 +1779,11 @@ void setup()
   {
     say("SETUP ERROR", haltReason[0] ? haltReason : "SEE SERIAL");
     armClearButtonForNewFault();
-    Serial.println();
-    Serial.println(F("HALTED. The self-test found something that would make this"));
-    Serial.println(F("machine take money and do the wrong thing with it."));
-    Serial.println(F("The coin input is left DETACHED, so it cannot bank money."));
-    Serial.println(F("Fix CONFIG and reflash. The console stays alive."));
+    LOGLN();
+    LOGLN(F("HALTED. The self-test found something that would make this"));
+    LOGLN(F("machine take money and do the wrong thing with it."));
+    LOGLN(F("The coin input is left DETACHED, so it cannot bank money."));
+    LOGLN(F("Fix CONFIG and reflash. The console stays alive."));
     state = ST_FAULT;
     return; // no attachInterrupt: coins cannot be counted in this condition
   }
@@ -1584,8 +1793,22 @@ void setup()
 
   attachCoinIsr();
 
-  showIdle();
-  Serial.println(F("Ready. Waiting for a coin."));
+  if (!padsPresent())
+  {
+    enterEmpty();
+  }
+  else
+  {
+    showIdle();
+    LOGLN(F("Ready. Waiting for a coin."));
+  }
+
+  if (!logEvents)
+  {
+    LOGLN(F("Event logging is OFF for the field (SECTION 7). Typed"));
+    LOGLN(F("console commands still answer in full. Press L for the"));
+    LOGLN(F("running commentary, ? for the command list."));
+  }
   rule();
 }
 
@@ -1597,6 +1820,10 @@ void loop()
   uint32_t loopStartUs = micros();
   uint32_t now = millis();
 
+  // A live watch is an explicit request to see something, so it overrides the
+  // field logging switch for as long as it is running.
+  logOn = logEvents || irWatch || stockWatch;
+
   buzzerService();
   pollSerial();
   clearButtonService();
@@ -1606,8 +1833,8 @@ void loop()
   if (motorRunning && (now - motorOnSince) > motorHardLimitMs())
   {
     motorOff();
-    Serial.println(F("!! Hard motor limit hit. The state machine did not stop it."));
-    Serial.println(F("!! That is a firmware bug, not a jam. Report it."));
+    LOGLN(F("!! Hard motor limit hit. The state machine did not stop it."));
+    LOGLN(F("!! That is a firmware bug, not a jam. Report it."));
     enterFault("MOTOR RUNAWAY");
   }
 
@@ -1621,10 +1848,10 @@ void loop()
     {
       lastVal = v;
       lastWatch = now;
-      Serial.print(F("IR: raw="));
-      Serial.print(digitalRead(PIN_IR) == LOW ? F("LOW ") : F("HIGH"));
-      Serial.print(F("  debounced="));
-      Serial.println(v ? F("BLOCKED") : F("clear"));
+      LOG(F("IR: raw="));
+      LOG(digitalRead(PIN_IR) == LOW ? F("LOW ") : F("HIGH"));
+      LOG(F("  debounced="));
+      LOGLN(v ? F("BLOCKED") : F("clear"));
     }
   }
 
@@ -1633,9 +1860,9 @@ void loop()
       (now - irBlockedSince) > IR_STUCK_WARN_MS)
   {
     irStuckWarned = true;
-    Serial.println(F("WARN: the chute has read BLOCKED for a while at rest."));
-    Serial.println(F("      Something is in it, or the sensor needs re-aiming."));
-    Serial.println(F("      The next paid vend will fault rather than run blind."));
+    LOGLN(F("WARN: the chute has read BLOCKED for a while at rest."));
+    LOGLN(F("      Something is in it, or the sensor needs re-aiming."));
+    LOGLN(F("      The next paid vend will fault rather than run blind."));
   }
 
   // ---- Coins ----
@@ -1684,6 +1911,38 @@ void loop()
     }
   }
 
+  // ---- Stock. Only ever acted on between vends: a dispense already running
+  // is never aborted, because the IR beam is the authority on whether a pad
+  // actually fell, not a switch under a shifting stack. ----
+  bool stocked = padsPresent();
+  if (state == ST_IDLE && !stocked)
+  {
+    enterEmpty();
+  }
+  else if (state == ST_EMPTY && stocked)
+  {
+    LOGLN(F("Stock switch reports pads loaded. Back in service."));
+    state = ST_IDLE;
+    coinAcceptorAllow(true);
+    showIdle();
+  }
+
+  // ---- Live stock watch, for mounting the switch ----
+  if (stockWatch)
+  {
+    static uint32_t lastStockWatch = 0;
+    static bool lastStockVal = false;
+    if (stocked != lastStockVal || (now - lastStockWatch) > 1000)
+    {
+      lastStockVal = stocked;
+      lastStockWatch = now;
+      LOG(F("STOCK: raw="));
+      LOG(digitalRead(PIN_PADS) == LOW ? F("LOW ") : F("HIGH"));
+      LOG(F("  debounced="));
+      LOGLN(stocked ? F("PADS PRESENT") : F("EMPTY"));
+    }
+  }
+
   // Self-healing: idle and not faulted means the acceptor should be live.
   if (state == ST_IDLE && !coinsAllowed)
     coinAcceptorAllow(true);
@@ -1697,9 +1956,9 @@ void loop()
     // Forget stale part-payment so the next customer starts clean.
     if (credit > 0 && credit < PAD_PRICE && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
     {
-      Serial.print(F("Partial credit of KSH "));
-      Serial.print(credit);
-      Serial.println(F(" timed out, cleared."));
+      LOG(F("Partial credit of KSH "));
+      LOG(credit);
+      LOGLN(F(" timed out, cleared."));
       credit = 0;
       showIdle();
     }
@@ -1729,28 +1988,28 @@ void loop()
       messageUntilMs = millis() + MESSAGE_HOLD_MS;
       state = ST_DELIVERED;
       rule();
-      Serial.print(F("PAD DELIVERED in "));
-      Serial.print(took);
-      Serial.println(F(" ms"));
-      Serial.print(F("  session vends : "));
-      Serial.println(vendCount);
-      Serial.print(F("  credit left   : KSH "));
-      Serial.println(credit);
+      LOG(F("PAD DELIVERED in "));
+      LOG(took);
+      LOGLN(F(" ms"));
+      LOG(F("  session vends : "));
+      LOGLN(vendCount);
+      LOG(F("  credit left   : KSH "));
+      LOGLN(credit);
       if (took < 150)
       {
-        Serial.println(F("  NOTE: that was very fast. Either the beam was"));
-        Serial.println(F("  already breaking, or the sensor sees the coil."));
+        LOGLN(F("  NOTE: that was very fast. Either the beam was"));
+        LOGLN(F("  already breaking, or the sensor sees the coil."));
       }
       rule();
     }
     else if ((now - dispenseStartMs) > DISPENSE_TIMEOUT_MS)
     {
       // Coil turned but nothing fell: empty, or a pad is wedged.
-      Serial.print(F("No pad in "));
-      Serial.print(DISPENSE_TIMEOUT_MS);
-      Serial.println(F(" ms."));
-      Serial.println(F("  Coil empty, pad wedged, or the timeout is too short"));
-      Serial.println(F("  for this motor. Time a revolution with  m1000."));
+      LOG(F("No pad in "));
+      LOG(DISPENSE_TIMEOUT_MS);
+      LOGLN(F(" ms."));
+      LOGLN(F("  Coil empty, pad wedged, or the timeout is too short"));
+      LOGLN(F("  for this motor. Time a revolution with  m1000."));
       enterFault("EMPTY OR JAMMED");
     }
     break;
@@ -1765,7 +2024,48 @@ void loop()
     {
       showIdle();
       state = ST_IDLE;
-      Serial.println(F("Ready."));
+      LOGLN(F("Ready."));
+    }
+    break;
+  }
+
+  // -----------------------------------------------------------------
+  case ST_EMPTY:
+  {
+    // Credit can still be sitting here from someone who paid just as the last
+    // pad went. It buys a pad the moment the coil is refilled, or it times out
+    // like any other partial payment.
+    if (credit > 0 && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
+    {
+      LOG(F("Credit of KSH "));
+      LOG(credit);
+      LOGLN(F(" timed out while out of stock."));
+      credit = 0;
+    }
+    // The screen is the only thing standing between a customer and a locked
+    // door, so say all three things in turn: that it is empty, that she is not
+    // being charged, and — if she already paid — that her money is still here.
+    if (reached(now, emptyRotateMs))
+    {
+      emptyRotateMs = now + FAULT_ROTATE_MS;
+      char l2[17];
+      switch (emptyMsgIdx)
+      {
+      case 0:
+        strncpy(l2, "NO COINS TAKEN", sizeof(l2));
+        break;
+      case 1:
+        strncpy(l2, "REFILL NEEDED", sizeof(l2));
+        break;
+      default:
+        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+        break;
+      }
+      l2[sizeof(l2) - 1] = 0;
+      say("SORRY - NO PADS", l2);
+      // The third panel only exists while somebody is owed something.
+      uint8_t panels = (credit > 0) ? 3 : 2;
+      emptyMsgIdx = (emptyMsgIdx + 1) % panels;
     }
     break;
   }
@@ -1802,20 +2102,22 @@ void loop()
   if (heartbeatOn && (now - lastBeatMs) > HEARTBEAT_MS)
   {
     lastBeatMs = now;
-    Serial.print(F("[hb] "));
-    Serial.print((now - bootMs) / 1000);
-    Serial.print(F("s  "));
-    Serial.print(stateName(state));
-    Serial.print(F("  credit KSH "));
-    Serial.print(credit);
-    Serial.print(F("  vends "));
-    Serial.print(vendCount);
-    Serial.print(F("  faults "));
-    Serial.print(faultCount);
-    Serial.print(F("  beam "));
-    Serial.print(irStable ? F("BLOCKED") : F("clear"));
-    Serial.print(F("  heap "));
-    Serial.println(ESP.getFreeHeap());
+    LOG(F("[hb] "));
+    LOG((now - bootMs) / 1000);
+    LOG(F("s  "));
+    LOG(stateName(state));
+    LOG(F("  credit KSH "));
+    LOG(credit);
+    LOG(F("  vends "));
+    LOG(vendCount);
+    LOG(F("  faults "));
+    LOG(faultCount);
+    LOG(F("  beam "));
+    LOG(irStable ? F("BLOCKED") : F("clear"));
+    LOG(F("  stock "));
+    LOG(!PAD_SWITCH_FITTED ? F("n/a") : (padsStable ? F("ok") : F("EMPTY")));
+    LOG(F("  heap "));
+    LOGLN(ESP.getFreeHeap());
   }
 
   // ---- Loop health ----
