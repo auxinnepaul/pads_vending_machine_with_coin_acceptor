@@ -691,6 +691,20 @@ const bool SERIAL_LOG_DEFAULT = true;
 // shows the fault on the LCD and waits rather than pretending to work.
 const bool HALT_ON_SELFTEST_FAIL = true;
 
+// --- LCD HEALTH ------------------------------------------------------------
+// How often to rebuild the display even when nothing has disturbed it.
+//
+//  The event triggers (motor, relay, coin) catch the three things we KNOW dip
+//  the rail. This catches the ones we do not: a spike from something else on
+//  the mains, a marginal connector, cable pickup, a glitch nobody diagnosed.
+//
+//  It is the difference between a display that recovers from known causes and
+//  one that cannot stay corrupted at all. In a machine that sits in a washroom
+//  for months, that is worth 50 ms a minute.
+//
+//  Set to 0 to disable.
+const uint32_t LCD_REFRESH_MS = 60000;
+
 // ###########################################################################
 // #                 END OF CONFIG.  Below here is machinery.                #
 // ###########################################################################
@@ -775,17 +789,30 @@ bool lcdOk = false; // false = run headless, console only
 //  Chinese characters. It stays that way until the display is re-initialised,
 //  because nothing about the LCD knows it lost sync.
 //
-//  The thing that makes it miss a nibble is the motor. Switching the coil
-//  drops the rail for a few milliseconds, the LCD controller browns out while
-//  the ESP32 — which has a much better supply — carries on talking to it.
+//  What makes it miss a nibble is anything that dips the rail hard enough for
+//  the LCD controller to brown out while the ESP32 — which has its own
+//  regulator and a far better supply — carries on talking to it.
 //
-//  So: after every motor run, rebuild the display from scratch before writing
-//  to it again. It costs about 50 ms once per vend and it makes the symptom
+//  THREE THINGS ON THIS MACHINE DO THAT, and all three set this flag:
+//
+//    the motor        switching the coil is the biggest single dip
+//    the inhibit relay  a relay coil de-energising kicks the rail
+//    the acceptor     it fires a gate solenoid on EVERY coin it accepts or
+//                     rejects, and it draws a surge when first powered
+//
+//  The acceptor is the one that catches people out, because it corrupts the
+//  display on a bench with no motor connected at all — which is exactly what
+//  happened on this build before the motor was even fitted.
+//
+//  So: after anything that kicks the rail, rebuild the display from scratch
+//  before writing to it again. It costs about 50 ms, only at moments when the
+//  screen was about to be repainted anyway, and it makes the symptom
 //  self-clear instead of persisting until somebody power-cycles the machine.
 //
 //  This is a belt-and-braces measure, not a substitute for fixing the supply.
 //  See README, "Funny symbols on the screen".
 bool lcdNeedsReinit = false;
+uint32_t lcdRefreshMs = 0; // next scheduled rebuild, see LCD_REFRESH_MS
 
 // Coin pulses are counted in an ISR and decoded into whole coins in loop().
 volatile uint16_t isrBurst = 0;
@@ -864,6 +891,8 @@ static inline uint32_t motorHardLimitMs()
 // attemptClear() is defined above both of these but has to call them.
 bool selfTest(bool verbose);
 void attachCoinIsr();
+static bool vendInFlight();
+void repaintForState();
 
 // Debounced pad stock switch
 bool padsRaw = true;
@@ -1101,6 +1130,8 @@ void coinAcceptorAllow(bool allow)
   if (allow != coinsAllowed)
   {
     coinsAllowed = allow;
+    // A relay coil collapsing kicks the rail. Treat the display as suspect.
+    lcdNeedsReinit = true;
     LOG(F("Coin acceptor "));
     LOGLN(allow ? F("ENABLED") : F("INHIBITED — coins will be returned"));
   }
@@ -2806,6 +2837,13 @@ void loop()
   CoinBurst cb;
   if (takeCoin(cb))
   {
+    // The acceptor has just fired its gate solenoid to take or reject that
+    // coin, and that dips the 12 V rail. On this build the acceptor corrupted
+    // the display on a bench with no motor connected, so this is not
+    // theoretical. The screen is about to be repainted anyway, so rebuilding
+    // it first costs nothing.
+    lcdNeedsReinit = true;
+
     const CoinDef *coin = lookupCoin(cb.pulses);
 
     if (!coin)
@@ -3150,6 +3188,20 @@ void loop()
     }
     break;
   }
+  }
+
+  // ---- Rebuild the display periodically, whatever happened to it ----
+  //
+  //  Belt and braces on top of the event triggers. Whatever corrupted the
+  //  screen, and whether or not we know what it was, it cannot survive longer
+  //  than this. Skipped mid-vend: the beam matters more than the screen, and
+  //  a vend is over in seconds anyway.
+  if (LCD_REFRESH_MS > 0 && lcdOk && !vendInFlight() &&
+      reached(now, lcdRefreshMs))
+  {
+    lcdRefreshMs = now + LCD_REFRESH_MS;
+    lcdNeedsReinit = true;
+    repaintForState();
   }
 
   // ---- Heartbeat, for soak tests ----

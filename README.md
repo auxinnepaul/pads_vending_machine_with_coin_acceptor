@@ -169,11 +169,96 @@ shifted by four bits. The HD44780's built-in font has **Japanese katakana at
 look like Chinese characters. Nothing about the display knows it has lost sync,
 so it stays corrupted until it is re-initialised.
 
-**What makes it miss a nibble.** Almost always the motor. Switching the coil
-drops the 5 V rail for a few milliseconds. The LCD controller browns out, while
-the ESP32 — which has a far better supply and a regulator of its own — carries
-straight on talking to it. That is why it happens *sometimes*: it happens on a
-vend.
+**What makes it miss a nibble.** Anything that dips the rail hard enough. Three
+things on this machine do:
+
+| Source | When |
+|---|---|
+| The motor | every vend — the biggest single dip |
+| The coin acceptor | **every coin**, and again at power-up |
+| Either relay | whenever a coil de-energises |
+
+**Do not assume it is the motor.** On this build the display corrupted on a
+bench with no motor connected at all — it was the acceptor. It fires a gate
+solenoid to take or reject every single coin, and that solenoid is an inductor
+being switched. The firmware rebuilds the display after all three, but the
+suppression below is what actually stops it.
+
+---
+
+## Snubbing the inductive loads
+
+Two inductive things hang off the 12 V rail: the motor and the acceptor's gate
+solenoid. Both dump a reverse spike when switched off. Left alone that spike
+travels the whole rail, which is what browns out the LCD.
+
+### The flyback diode across the motor
+
+**Part:** `1N5408` (3 A) is the right default. `1N4007` (1 A) works for a small
+gearmotor but is marginal on a wiper motor. A Schottky such as `SR5100` is
+better still and not needed.
+
+**Orientation — get this right or you short the supply:**
+
+```
+        relay COM/NO ─────┬───── MOTOR + ────┐
+                          │                  │
+                        ──┴──                │   band (cathode) goes
+                         ╱ ╲   1N5408        │   to the POSITIVE side
+                        ╱   ╲                │
+                       ─────────  ◄── band   │
+                          │                  │
+        12 V GND ─────────┴───── MOTOR − ────┘
+```
+
+**The banded end (cathode) goes to the motor's POSITIVE terminal.** The diode
+is reverse-biased in normal running, so it does nothing at all. Only when the
+relay opens and the motor's field collapses — reversing the voltage across it —
+does it conduct and give that energy a loop to die in, instead of throwing it
+back down the rail.
+
+Fit it **at the motor terminals**, not at the relay. The wire between them is
+inductive too, and a diode at the far end leaves that spike free to travel.
+
+If you fit it backwards it conducts the moment you apply 12 V and becomes a
+dead short. Check the band before you power up.
+
+*Side effect, and a welcome one here: a flyback diode makes the motor
+freewheel rather than stop dead, which is gentler on the coil and the pads.*
+
+### The coin acceptor
+
+You cannot get inside it to put a diode across its solenoid, so suppress it at
+its terminals instead:
+
+- **1000 µF electrolytic + 100 nF ceramic** directly across the acceptor's
+  12 V and GND, at the acceptor. The electrolytic absorbs the sag; the ceramic
+  handles the fast edge the electrolytic is too slow for.
+- Optionally a **TVS diode** (`SMBJ15A` or `P6KE15A`) across the same two
+  terminals, band to +12 V. It clamps anything the capacitors do not.
+
+### Star-wire the 12 V rail
+
+This matters as much as the components. Run **separate pairs** from the supply
+to each load, rather than daisy-chaining:
+
+```
+                    ┌──── coin acceptor        (+ 1000 µF, 100 nF at it)
+  12 V supply ──────┼──── relay → motor        (+ flyback diode at the motor)
+   (+ 1000 µF)      └──── LM2596 → 5 V ──┬──── ESP32 VIN
+                                         └──── LCD      (+ 100 µF, 100 nF at it)
+```
+
+Shared wire is shared voltage drop. Daisy-chained, the acceptor's surge appears
+directly across the LCD's supply pins. Star-wired, it is mostly confined to the
+acceptor's own pair.
+
+### And at the display itself
+
+**100 µF electrolytic + 100 nF ceramic across the LCD backpack's VCC and GND
+pins**, as physically close as you can solder them. These backpacks ship with
+almost no decoupling of their own, and this is frequently the single most
+effective fix for exactly this symptom.
 
 **Fix the supply first.** This is the real cure:
 
