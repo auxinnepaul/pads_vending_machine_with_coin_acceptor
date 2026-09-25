@@ -864,8 +864,10 @@ volatile uint32_t isrBurstStartMs = 0;
 // acceptor takes money the firmware cannot count.
 bool coinIsrAttached = false;
 
-Preferences prefs;   // opened once in setup(), holds only the meter balance
-bool creditPersistOk = false;     // is the balance actually reaching flash?
+Preferences prefs;   // holds only the meter balance
+bool creditStoreOpen = false;     // did prefs.begin() ever succeed?
+bool creditPersistOk = false;     // and are writes actually reaching flash?
+uint32_t storeRetryMs = 0;        // next attempt to open a store that refused
 bool creditPersistWarned = false; // shout about a failure once, not forever
 uint16_t creditInFlash = 0;       // what we last successfully wrote
 
@@ -929,6 +931,7 @@ static bool vendInFlight();
 void repaintForState();
 void wakeDisplay();
 void sleepDisplay();
+bool ensureCreditStore();
 
 // Debounced pad stock switch
 bool padsRaw = true;
@@ -1077,6 +1080,10 @@ void setCredit(uint16_t value)
   if (!REMEMBER_CREDIT_ACROSS_POWER_LOSS)
     return;
 
+  // A store that refused at boot may be available now. This also seeds
+  // creditInFlash, without which the overstated-balance check below is blind.
+  ensureCreditStore();
+
   // Nothing to write. Only trust this when the last write actually landed,
   // otherwise a retry of the same value would be skipped forever.
   if (creditPersistOk && value == creditInFlash)
@@ -1143,6 +1150,56 @@ void setCredit(uint16_t value)
     LOGLN(F("!! The machine keeps trading; stopping would not help anybody."));
     LOGLN(F("!! Check the NVS partition. Status and  d  both report this."));
   }
+}
+
+// Open the credit store, or keep trying if it refused at boot.
+//
+//  WHY THIS RETRIES AT ALL. If prefs.begin() fails during setup() we cannot
+//  read what is in NVS, so we do not know whether an old balance is sitting in
+//  there. Everything downstream is then blind: the "is the stored value too
+//  high" check compares against a creditInFlash of zero and can never fire, so
+//  an old balance survives the whole session untouched. If NVS then opens
+//  normally on some later boot, that balance is restored as gospel and can
+//  vend a pad nobody paid for. The danger is not the failure, it is the
+//  failure being invisible.
+//
+//  Note prefs.begin() returns FALSE when the store is already open, so this
+//  has to track "open" separately from "writes are working" — calling begin()
+//  again on a healthy store would otherwise look like a failure.
+bool ensureCreditStore()
+{
+  if (creditStoreOpen)
+    return true;
+  if (!prefs.begin("padvend", false))
+    return false;
+
+  creditStoreOpen = true;
+  uint16_t stored = prefs.getUShort("credit", 0);
+  creditInFlash = stored;
+
+  LOG(F("Credit store opened late. It holds KSH "));
+  LOGLN(stored);
+
+  //  ANYTHING FOUND NOW IS STALE BY DEFINITION. The boot restore has already
+  //  been and gone; this balance belongs to a session we could not read. It is
+  //  not restored, because hours may have passed and the machine has been
+  //  trading without it. It is reconciled DOWN to the meter for the same
+  //  reason as everywhere else: a stored value above the truth can vend a pad
+  //  nobody paid for, one at or below it cannot.
+  if (stored > credit)
+  {
+    if (prefs.putUShort("credit", credit) != 0)
+    {
+      creditInFlash = credit;
+      LOGLN(F("  Stale and higher than the meter, so it has been overwritten."));
+      LOGLN(F("  A later boot cannot now restore it and vend an unpaid pad."));
+    }
+    else
+    {
+      LOGLN(F("  Stale and higher than the meter, but it will not overwrite."));
+    }
+  }
+  return true;
 }
 
 // The only place money is added to the meter. Returns false if it refused.
@@ -2199,8 +2256,12 @@ bool selfTest(bool verbose)
   else
   {
     LOG(F("  store       : "));
-    LOGLN(creditPersistOk ? F("open, writing normally")
-                          : F("NOT WRITING  <- power-cut protection is gone"));
+    if (!creditStoreOpen)
+      LOGLN(F("WILL NOT OPEN  <- cannot see or clear an old balance"));
+    else if (!creditPersistOk)
+      LOGLN(F("open but NOT WRITING  <- power-cut protection is gone"));
+    else
+      LOGLN(F("open, writing normally"));
     LOG(F("  balance in flash: KSH "));
     LOGLN(prefs.getUShort("credit", 0));
     LOGLN(F("  This is the only thing this firmware stores."));
@@ -2339,6 +2400,8 @@ void printStatus()
   LOG(F("  balance saved: "));
   if (!REMEMBER_CREDIT_ACROSS_POWER_LOSS)
     LOGLN(F("off (SECTION 3)"));
+  else if (!creditStoreOpen)
+    LOGLN(F("NO — store will not open, old balance unknown"));
   else
     LOGLN(creditPersistOk ? F("yes") : F("NO — a power cut will lose it"));
   LOG(F("  part payment : "));
@@ -2837,12 +2900,19 @@ void setup()
   buzzerInit();
 
   // The meter balance is the only thing this firmware keeps in flash.
-  creditPersistOk = prefs.begin("padvend", false);
-  if (!creditPersistOk)
+  creditStoreOpen = prefs.begin("padvend", false);
+  creditPersistOk = creditStoreOpen;
+  if (!creditStoreOpen)
   {
-    LOGLN(F("!! The credit store would not open. The meter balance cannot be"));
-    LOGLN(F("!! saved, so a power cut will lose whatever is on it. The machine"));
-    LOGLN(F("!! still trades — see SECTION 3."));
+    LOGLN(F("!! The credit store would not open. Two consequences, and the"));
+    LOGLN(F("!! second is the one that matters:"));
+    LOGLN(F("!!   1. the meter balance cannot be saved, so a power cut loses"));
+    LOGLN(F("!!      whatever is on it;"));
+    LOGLN(F("!!   2. we cannot SEE what is already in NVS, so an old balance"));
+    LOGLN(F("!!      may be sitting there. If the store opens on a later boot"));
+    LOGLN(F("!!      it would be restored and could vend an unpaid pad."));
+    LOGLN(F("!! The machine keeps trying to open it every 30 s and will clear"));
+    LOGLN(F("!! anything stale the moment it can. It still trades meanwhile."));
     creditPersistWarned = true;
   }
 
@@ -3398,6 +3468,18 @@ void loop()
     lcdRefreshMs = now + LCD_REFRESH_MS;
     lcdNeedsReinit = true;
     repaintForState();
+  }
+
+  // ---- A store that refused at boot is retried until it opens ----
+  //
+  //  setCredit() also tries, but only when money moves. An idle machine with
+  //  an unreadable store would otherwise never find out that an old balance is
+  //  waiting in NVS to be restored by a later boot.
+  if (REMEMBER_CREDIT_ACROSS_POWER_LOSS && !creditStoreOpen &&
+      reached(now, storeRetryMs))
+  {
+    storeRetryMs = now + 30000;
+    ensureCreditStore();
   }
 
   // ---- Heartbeat, for soak tests ----

@@ -712,10 +712,37 @@ the one that was safe.
 Only an overstated balance is written over. If that write fails too, nothing is
 lost that was not already lost.
 
+### If the store will not open at all
+
+That is a worse failure than writes failing, and for a non-obvious reason: **we
+cannot see what is already in NVS.** An old balance may be sitting there, and
+every safety check downstream compares against a stored value of zero, so
+nothing can detect it. If NVS then opens normally on a later boot, that balance
+is restored as gospel and can vend a pad nobody paid for.
+
+The danger is not the failure. It is the failure being invisible.
+
+So the machine **retries the open every 30 seconds**, and also whenever money
+moves. The moment it succeeds it reads what is in there and reconciles:
+
+- anything found at that point is **stale by definition** — the boot restore
+  has already been and gone, and the machine has been trading without it, so it
+  is not restored;
+- if it is **higher than the meter** it is overwritten, because that is the
+  direction that can produce an unpaid vend.
+
+`s` and `d` distinguish the two failures, because they need different fixes:
+
+```
+store       : WILL NOT OPEN  <- cannot see or clear an old balance
+store       : open but NOT WRITING  <- power-cut protection is gone
+```
+
 **What remains, stated plainly:** with writes failing, a power cut loses
-whatever is on the meter. The machine trades on and tells you. Fixing the NVS
-partition is the cure; there is no firmware answer to flash that will not
-accept data.
+whatever is on the meter. If the store never opens for an entire session and
+opens on a later boot, a stale balance from before can still be restored. The
+machine trades on and tells you throughout. Fixing the NVS partition is the
+cure; there is no firmware answer to flash that will not accept data.
 
 **What it does not fix.** It restores the *claim*, not the cash. Nothing can
 return the coin. And there is a window of a few milliseconds between a pad
