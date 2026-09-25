@@ -234,7 +234,17 @@ const uint8_t PIN_IR = 27;
 const uint8_t PIN_BUZZER = 25;
 const uint8_t PIN_SDA = 21;
 const uint8_t PIN_SCL = 22;
-const uint8_t PIN_INHIBIT = 19; // relay 2 -> HX-916 2-pin inhibit port
+// Moved off GPIO 19 after it would not drive the inhibit relay reliably on
+// the bench. 19 is a plain GPIO on paper — no strapping, no flash, not an ADC
+// pin — so on the datasheet it should have worked. It did not, and measured
+// behaviour beats a datasheet.
+//
+// 13 is the right replacement: no strapping function, no flash, nothing else
+// on it. NOT 12, which is tempting and is a trap — GPIO 12 is MTDI, and the
+// chip reads it at boot to choose the flash regulator voltage. A relay module
+// with any pull-up on its input will hold 12 high at reset, the ESP32 will set
+// the flash rail to 1.8 V, and the board will stop booting.
+const uint8_t PIN_INHIBIT = 13; // relay 2 -> HX-916 2-pin inhibit port
 const uint8_t PIN_CLEAR = 23;   // jam-clear button to GND (INPUT_PULLUP)
 const uint8_t PIN_PADS = 33;    // stock limit switch to GND (INPUT_PULLUP)
 
@@ -358,7 +368,7 @@ const uint8_t LCD_I2C_ADDR = 0x27;
 // false = the relay module energises when its input is pulled LOW. Most
 //         opto-isolated Chinese relay boards are this way round.
 // IMPORTANT: with an active-LOW module the pin must be HIGH to keep the relay
-// OFF, so GPIO 19 needs a 10k pull-UP to 3V3 — not a pull-down. Get this
+// OFF, so PIN_INHIBIT needs a 10k pull-UP to 3V3 — not a pull-down. Get this
 // backwards and the acceptor is live for the whole boot window.
 const bool INHIBIT_RELAY_ACTIVE_HIGH = false;
 
@@ -1334,6 +1344,11 @@ void motorOff()
   // pulses, worse than starting. Keep the line muted well past it.
   coinUnmuteMs = millis() + MOTOR_NOISE_SETTLE_MS;
 }
+
+// Bench override for the inhibit pin: -1 automatic, 0 forced LOW, 1 forced
+// HIGH. Only the  n  command sets it, and only so that the pin level and the
+// relay's behaviour can be compared directly instead of inferred.
+int8_t inhibitOverride = -1;
 
 // Turn the coin slot on or off, through the second relay.
 //
@@ -2422,7 +2437,8 @@ void printHelp()
   LOGLN(F("  k        watch the pad stock switch live"));
   LOGLN(F("  l        LCD test pattern"));
   LOGLN(F("  b        buzzer test"));
-  LOGLN(F("  n        click the coin-inhibit relay 3x — does it actually move?"));
+  LOGLN(F("  n        click the inhibit relay 3x — does it actually move?"));
+  LOGLN(F("  n0 / n1  hold that pin LOW / HIGH to read the relay's polarity"));
   LOGLN();
   LOGLN(F("  x        clear a latched fault"));
   LOGLN(F("           (or hold the front-panel button for 1 s)"));
@@ -2697,17 +2713,31 @@ void handleCommand(char *s)
     break;
 
   case 'n':
-    // Bench test for the coin-inhibit relay, because "the firmware says it
-    // inhibited" and "the relay actually moved" are different claims and only
-    // one of them is visible from the console.
-    LOGLN(F("Clicking the coin-inhibit relay three times. LISTEN."));
-    LOGLN(F("  Three clicks   = the relay is being driven correctly."));
-    LOGLN(F("  Silence        = it never moves. Check GPIO 19 and the module."));
-    LOGLN(F("  One click only = it energises but will not release. That is"));
-    LOGLN(F("                   the 3.3 V problem: an ESP32 HIGH is only"));
-    LOGLN(F("                   3.3 V, and on a 5 V opto module that leaves"));
-    LOGLN(F("                   1.7 V across the input LED, often enough to"));
-    LOGLN(F("                   hold it on. Feed the module's VCC from 3V3."));
+    // The firmware saying "inhibited" and the relay actually moving are two
+    // different claims, and only the first is visible from a console. This
+    // makes the second measurable: drive the pin by hand, watch the relay,
+    // and read the polarity straight off the bench instead of arguing it.
+    if (n == 0 || n == 1)
+    {
+      inhibitOverride = (int8_t)n;
+      digitalWrite(PIN_INHIBIT, n ? HIGH : LOW);
+      LOG(F("GPIO "));
+      LOG(PIN_INHIBIT);
+      LOG(F(" held "));
+      LOGLN(n ? F("HIGH (3.3 V). Look at the relay.")
+              : F("LOW (0 V). Look at the relay."));
+      LOGLN(F("  n0 and n1 to compare, then n to release it."));
+      LOGLN(F("  Whichever level makes the relay ENERGISE is the module's"));
+      LOGLN(F("  active level: set INHIBIT_RELAY_ACTIVE_HIGH to match."));
+      break;
+    }
+    inhibitOverride = -1;
+    LOGLN(F("Automatic again. Clicking the relay three times — LISTEN."));
+    LOGLN(F("  Three clicks = driven correctly."));
+    LOGLN(F("  Silence      = it never moves. Check the pin, the module's"));
+    LOGLN(F("                 supply, and that its ground is common with the"));
+    LOGLN(F("                 ESP32's. A relay module with no shared ground"));
+    LOGLN(F("                 does nothing at all."));
     for (uint8_t i = 0; i < 3; i++)
     {
       coinAcceptorAllow(false);
@@ -3336,7 +3366,8 @@ void loop()
   //  Driving it from state in one place means the slot can never disagree with
   //  what the machine is actually doing. There is no way to enter a state and
   //  forget to open or close it, because nothing else touches it.
-  coinAcceptorAllow(state != ST_EMPTY && state != ST_FAULT);
+  if (inhibitOverride < 0)
+    coinAcceptorAllow(state != ST_EMPTY && state != ST_FAULT);
 
   switch (state)
   {

@@ -71,7 +71,7 @@ band faces.
 | Relay | 26 | active HIGH, **10 kΩ pull-down to GND** |
 | IR sensor | 27 | powered from 3V3 |
 | Buzzer | 25 | passive, LEDC or `tone()` depending on core version |
-| Coin inhibit | 19 | relay 2 → HX-916 2-pin port. Active LOW, **10 kΩ pull-UP to 3V3** |
+| Coin inhibit | 13 | relay 2 → HX-916 2-pin port. Active LOW, **10 kΩ pull-UP to 3V3** |
 | Jam clear | 23 | momentary button to GND, `INPUT_PULLUP`, inside the locked door |
 | Pad stock | 33 | limit switch to GND, `INPUT_PULLUP`. Closed = pads present |
 
@@ -86,7 +86,7 @@ Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
    tolerant, let alone 12 V.
 3. **Fit the 10 kΩ pull-down on GPIO 26** so the motor stays still through boot
    and through every reset while flashing.
-4. **Fit a 10 kΩ pull-UP to 3V3 on GPIO 19** — a pull-*up*, the opposite of
+4. **Fit a 10 kΩ pull-UP to 3V3 on GPIO 13** — a pull-*up*, the opposite of
    GPIO 26, because the inhibit relay module is active LOW. The pin floats
    until `setup()` runs; if it sits low through that window the relay
    energises, the NC contact opens and the coin slot is live on every reset.
@@ -159,17 +159,33 @@ Two fixes, in order of preference:
 2. **Drive it through a small NPN or a level shifter**, if the board has no
    such jumper.
 
-Do **not** use open-drain on GPIO 19 to solve this. It works electrically, but
-it lets the module's own pull-up put 5 V on the pin, and GPIO 19 is not 5 V
+Do **not** use open-drain here to solve it. It works electrically, but it lets
+the module's own pull-up put 5 V on the pin, and these pins are not 5 V
 tolerant.
 
-**To tell which fault you have**, type `n`. It clicks the relay three times:
+**Measure it instead of arguing about it.** `n0` holds the pin LOW, `n1` holds
+it HIGH, and `n` releases it back to automatic and clicks the relay three
+times.
 
-| What you hear | What it means |
+| What you see | What it means |
 |---|---|
-| Three clicks | driven correctly — the relay is fine |
-| Silence | it never moves. Check GPIO 19, the module's supply and ground |
-| One click, then held | the 3.3 V problem above |
+| The relay follows `n0` / `n1` | it is driven correctly. Whichever level energises it is the module's active level — set `INHIBIT_RELAY_ACTIVE_HIGH` to match |
+| Nothing moves on either | check the pin, the module's supply, and that its ground is **common with the ESP32's**. A relay module with no shared ground does nothing at all |
+| It energises but never releases | the module needs more than the pin can supply. Drive it through a small NPN |
+
+### Why the inhibit relay is on GPIO 13 and not 19
+
+GPIO 19 is a plain GPIO on paper — no strapping, no flash, not an ADC pin — so
+it should have worked. On the bench it would not drive the relay reliably, and
+measured behaviour beats a datasheet.
+
+**Do not "fix" this by moving to GPIO 12.** It is the obvious neighbouring
+choice and it is a trap: GPIO 12 is MTDI, and the chip reads it at boot to pick
+the flash regulator voltage. A relay module with any pull-up on its input holds
+12 high at reset, the ESP32 sets the flash rail to 1.8 V, and the board stops
+booting.
+
+Free and safe on this build: **13, 14, 16, 17, 32.**
 
 ---
 
