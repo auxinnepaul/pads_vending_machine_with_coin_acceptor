@@ -1387,12 +1387,27 @@ void coinAcceptorAllow(bool allow)
 {
   bool contactClosed = !allow; // closed == inhibited
   bool energised = INHIBIT_CONTACT_IS_NC ? !contactClosed : contactClosed;
-  digitalWrite(PIN_INHIBIT, (energised == INHIBIT_RELAY_ACTIVE_HIGH) ? HIGH : LOW);
+  bool level = (energised == INHIBIT_RELAY_ACTIVE_HIGH);
+  digitalWrite(PIN_INHIBIT, level ? HIGH : LOW);
   if (allow != coinsAllowed)
   {
     coinsAllowed = allow;
     // A relay coil collapsing kicks the rail. Treat the display as suspect.
     lcdNeedsReinit = true;
+
+    // Print the ELECTRICAL intent, not just the word. "Coins inhibited" only
+    // says what the firmware decided; this says what it did to the pin and
+    // what it expects the relay to do about it. If the relay disagrees with
+    // the last line here, the fault is in the wiring or in
+    // INHIBIT_RELAY_ACTIVE_HIGH — and it is no longer a matter of opinion.
+    LOG(F("  [GPIO "));
+    LOG(PIN_INHIBIT);
+    LOG(F(" driven "));
+    LOG(level ? F("HIGH") : F("LOW"));
+    LOG(F(" -> expect the relay to be "));
+    LOG(energised ? F("ENERGISED") : F("RELEASED"));
+    LOG(F(", contact "));
+    LOGLN(contactClosed ? F("CLOSED = slot blocked]") : F("OPEN = slot live]"));
     LOG(F("Coin acceptor "));
     LOGLN(allow ? F("ENABLED") : F("INHIBITED — coins will be returned"));
   }
@@ -2293,6 +2308,11 @@ bool selfTest(bool verbose)
   }
   LOG(F("  coins now   : "));
   LOGLN(coinsAllowed ? F("enabled") : F("inhibited"));
+  LOG(F("  pin reads   : "));
+  LOG(digitalRead(PIN_INHIBIT) == HIGH ? F("HIGH") : F("LOW"));
+  LOGLN(F("  <- compare this with what the relay is doing"));
+  LOGLN(F("  If they disagree, the config is wrong, not the firmware."));
+  LOGLN(F("  n0 and n1 hold the pin either way so you can check."));
   LOG(F("  clear button: GPIO "));
   LOG(PIN_CLEAR);
   LOG(F(" reads "));
