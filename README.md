@@ -140,6 +140,37 @@ which one it thinks you used.
 Drive it from a **dry relay contact, never a GPIO** — on some HX-916 units
 that pin sits at 12 V.
 
+### If the inhibit relay will not release
+
+Symptom: the console says `Coin acceptor INHIBITED` but the relay stays
+energised. The firmware is fine; this is a voltage problem.
+
+An ESP32 drives HIGH at **3.3 V**. On a 5 V opto-isolated relay module the
+input LED's anode sits at 5 V, so a 3.3 V "off" still leaves **1.7 V across the
+LED and its series resistor** — often enough to keep it conducting and the
+relay held on. The module energises and never releases.
+
+Two fixes, in order of preference:
+
+1. **Feed the module's logic VCC from 3V3, not 5 V.** Most of these boards have
+   a `JD-VCC` jumper that separates the opto/logic supply from the coil supply:
+   pull the jumper, put VCC on 3V3 and JD-VCC on 5 V. Now a 3.3 V HIGH matches
+   VCC exactly and the LED goes fully off.
+2. **Drive it through a small NPN or a level shifter**, if the board has no
+   such jumper.
+
+Do **not** use open-drain on GPIO 19 to solve this. It works electrically, but
+it lets the module's own pull-up put 5 V on the pin, and GPIO 19 is not 5 V
+tolerant.
+
+**To tell which fault you have**, type `n`. It clicks the relay three times:
+
+| What you hear | What it means |
+|---|---|
+| Three clicks | driven correctly — the relay is fine |
+| Silence | it never moves. Check GPIO 19, the module's supply and ground |
+| One click, then held | the 3.3 V problem above |
+
 ---
 
 ## Building it

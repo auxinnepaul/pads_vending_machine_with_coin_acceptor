@@ -2422,6 +2422,7 @@ void printHelp()
   LOGLN(F("  k        watch the pad stock switch live"));
   LOGLN(F("  l        LCD test pattern"));
   LOGLN(F("  b        buzzer test"));
+  LOGLN(F("  n        click the coin-inhibit relay 3x — does it actually move?"));
   LOGLN();
   LOGLN(F("  x        clear a latched fault"));
   LOGLN(F("           (or hold the front-panel button for 1 s)"));
@@ -2693,6 +2694,28 @@ void handleCommand(char *s)
   case 'b':
     LOGLN(F("Chirp."));
     beep(TONE_VEND_HZ, TONE_VEND_MS);
+    break;
+
+  case 'n':
+    // Bench test for the coin-inhibit relay, because "the firmware says it
+    // inhibited" and "the relay actually moved" are different claims and only
+    // one of them is visible from the console.
+    LOGLN(F("Clicking the coin-inhibit relay three times. LISTEN."));
+    LOGLN(F("  Three clicks   = the relay is being driven correctly."));
+    LOGLN(F("  Silence        = it never moves. Check GPIO 19 and the module."));
+    LOGLN(F("  One click only = it energises but will not release. That is"));
+    LOGLN(F("                   the 3.3 V problem: an ESP32 HIGH is only"));
+    LOGLN(F("                   3.3 V, and on a 5 V opto module that leaves"));
+    LOGLN(F("                   1.7 V across the input LED, often enough to"));
+    LOGLN(F("                   hold it on. Feed the module's VCC from 3V3."));
+    for (uint8_t i = 0; i < 3; i++)
+    {
+      coinAcceptorAllow(false);
+      holdFor(450);
+      coinAcceptorAllow(true);
+      holdFor(450);
+    }
+    LOGLN(F("Done. loop() puts it back to whatever the state calls for."));
     break;
 
   case 'l':
