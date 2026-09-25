@@ -799,7 +799,13 @@ void IRAM_ATTR onCoinPulse()
         isrGapMax = (uint16_t)g;
     }
     isrSeenOne = true;
-    isrBurst++;
+    // Saturate rather than wrap. A noisy or oscillating coin line could
+    // otherwise count past 65535 and come back round onto a number that
+    // matches a real coin in the table — free pads, from electrical noise.
+    // Stopped here, a runaway burst stays an absurd number, matches nothing,
+    // and is refused.
+    if (isrBurst < 1000)
+      isrBurst++;
     isrTotal++;
     isrLastMs = now;
   }
@@ -823,6 +829,37 @@ bool takeCoin(CoinBurst &b)
   }
   portEXIT_CRITICAL(&coinMux);
   return ready;
+}
+
+// Ceiling on the meter, as a hard stop rather than an assumption.
+//
+//  In normal operation credit never climbs anywhere near this: the machine
+//  vends the instant credit reaches the price, so it cannot exceed PAD_PRICE
+//  plus one coin before dropping again. Coins are refused outright in EMPTY
+//  and FAULT, so it cannot pile up there either.
+//
+//  It exists because "cannot happen" is a bad thing to rely on in the one
+//  variable that represents somebody's money. If a future state ever holds
+//  credit without spending it, this stops a 16-bit counter wrapping and
+//  handing the next customer a fortune. If it ever trips, that is a firmware
+//  bug and the console says so.
+const uint16_t MAX_CREDIT = 10000;
+
+// The only place money is added to the meter. Returns false if it refused.
+bool bankCoin(const CoinDef *coin)
+{
+  if ((uint32_t)credit + coin->value > MAX_CREDIT)
+  {
+    LOGLN(F("!! CREDIT CEILING HIT. Coin NOT banked."));
+    LOGLN(F("!! Credit is not being spent when it should be. That is a"));
+    LOGLN(F("!! firmware bug, not a coin problem. Report it."));
+    return false;
+  }
+  credit += coin->value;
+  shillingsIn += coin->value;
+  coinsAccepted++;
+  lastCoinMs = millis();
+  return true;
 }
 
 const CoinDef *lookupCoin(uint16_t pulses)
@@ -1322,7 +1359,14 @@ void reportCoin(uint16_t pulses, const CoinDef *coin, const CoinBurst *b = nullp
   LOG(F(" of KSH "));
   LOGLN(PAD_PRICE);
 
-  if (state != ST_IDLE)
+  if (state == ST_DISPENSING || state == ST_DELIVERED)
+  {
+    LOG(F("MEANING      : machine is "));
+    LOG(stateName(state));
+    LOGLN(F(" — banked toward the next pad"));
+    LOGLN(F("WILL VEND    : another pad as soon as this one finishes."));
+  }
+  else if (state != ST_IDLE)
   {
     LOG(F("MEANING      : machine is "));
     LOG(stateName(state));
@@ -1580,7 +1624,11 @@ bool selfTest(bool verbose)
   irRaw = irStable = false;
   uint32_t t0 = millis();
   while (millis() - t0 < 200)
+  {
     padSeen();
+    buzzerService();
+    delay(1); // yield, same as everywhere else that waits on the beam
+  }
   LOG(F("  GPIO "));
   LOG(PIN_IR);
   LOG(F(" raw   : "));
@@ -1861,6 +1909,14 @@ void printStatus()
   rule();
 }
 
+// Bench motor test: run the coil for a fixed time and report when the beam
+// broke. This is how DISPENSE_TIMEOUT_MS gets its number.
+//
+//  NOTE: this deliberately steps outside the loop() motor backstop, because it
+//  blocks rather than returning to loop(). Its own 10 s ceiling is the only
+//  limit while it runs. That is fine for a command an operator types while
+//  watching the machine, and wrong for anything automatic — which is why
+//  nothing else in the firmware drives the motor this way.
 void runMotorFor(uint32_t ms)
 {
   if (ms == 0 || ms > 10000)
@@ -1912,6 +1968,8 @@ bool startVend(const char *why)
       clear = false;
       break;
     }
+    buzzerService();
+    delay(1); // yield: 1 ms is well inside IR_DEBOUNCE_MS, so nothing is missed
   }
   if (!clear)
   {
@@ -2115,18 +2173,14 @@ void handleCommand(char *s)
     LOG(F("Simulating a "));
     LOG(n);
     LOGLN(F("-pulse coin."));
+    // Same rules as a real coin, so what this prints is what would actually
+    // have happened. Banked while the machine can still deliver; refused in
+    // EMPTY and FAULT, where it cannot.
     const CoinDef *coin = lookupCoin((uint16_t)n);
-    if (coin && state == ST_IDLE)
-    {
-      credit += coin->value;
-      shillingsIn += coin->value;
-      coinsAccepted++;
-      lastCoinMs = millis();
-    }
-    else if (!coin)
-    {
+    if (!coin)
       coinsUnknown++;
-    }
+    else if (state == ST_IDLE || state == ST_DISPENSING || state == ST_DELIVERED)
+      bankCoin(coin);
     reportCoin((uint16_t)n, coin);
     if (state == ST_IDLE)
       showIdle();
@@ -2382,21 +2436,50 @@ void loop()
         showIdle();
       }
     }
+    else if (state == ST_DISPENSING || state == ST_DELIVERED)
+    {
+      // Inhibiting the acceptor only stops the NEXT coin. One already rolling
+      // through the mechanism when the vend started still finishes its pulse
+      // burst and lands here — the machine physically has that money.
+      //
+      // So bank it rather than discard it. This state is temporary and ends in
+      // IDLE within a second or two, and credit on the meter buys the next
+      // pad. Throwing it away would mean keeping the money and giving nothing
+      // back, which is the one outcome worth engineering against.
+      //
+      // "Never owe a pad we cannot deliver" still holds: here we CAN deliver,
+      // in a moment. That is exactly why EMPTY and FAULT are handled
+      // differently in the branch below.
+      if (bankCoin(coin))
+        beep(TONE_COIN_HZ, TONE_COIN_MS);
+      else
+        beep(TONE_REJECT_HZ, TONE_REJECT_MS);
+      reportCoin(cb.pulses, coin, &cb);
+
+      // Do not paint over DELIVERED's "TAKE YOUR PAD" — she needs to read it.
+      if (state == ST_DISPENSING)
+      {
+        char l2[17];
+        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+        say("PLEASE WAIT", l2);
+      }
+    }
     else if (state != ST_IDLE)
     {
-      // Mid-vend or faulted. Banking it now would owe a pad we cannot promise.
+      // EMPTY or FAULT. The machine cannot promise a pad at all, so this must
+      // NOT go on the meter. The coin is still lost — there is no hopper and
+      // nothing to refund with — but it is reported rather than pocketed in
+      // silence, and the acceptor was already inhibited, so this can only be a
+      // coin that was mid-flight when things went wrong.
       beep(TONE_REJECT_HZ, TONE_REJECT_MS);
-      if (state == ST_DISPENSING || state == ST_DELIVERED)
-        say("PLEASE WAIT", "ONE AT A TIME");
       reportCoin(cb.pulses, coin, &cb);
     }
     else
     {
-      credit += coin->value;
-      shillingsIn += coin->value;
-      coinsAccepted++;
-      lastCoinMs = now;
-      beep(TONE_COIN_HZ, TONE_COIN_MS);
+      if (bankCoin(coin))
+        beep(TONE_COIN_HZ, TONE_COIN_MS);
+      else
+        beep(TONE_REJECT_HZ, TONE_REJECT_MS);
       reportCoin(cb.pulses, coin, &cb);
 
       if (credit < PAD_PRICE)

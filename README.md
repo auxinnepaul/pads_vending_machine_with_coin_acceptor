@@ -406,8 +406,17 @@ independently of the state machine. Even a firmware bug cannot leave the coil
 turning. If it ever fires, the console says so and calls it a bug rather than a
 jam.
 
-Coins inserted while dispensing or faulted are **logged but not banked**, so
-the machine never owes a pad it cannot deliver.
+**A coin that lands mid-vend is honoured, not discarded.** Inhibiting the
+acceptor only stops the *next* coin — one already rolling through the mechanism
+finishes its pulse burst after the vend has started, and the machine physically
+has that money. It goes on the meter and buys the next pad, because the machine
+is about to be back in service anyway. Throwing it away would mean keeping the
+money and giving nothing back.
+
+Coins that land while **faulted or out of stock** are logged but **not** banked.
+There the machine genuinely cannot promise a pad, so it must not take the money
+onto the meter. Those coins are still lost — there is no hopper and nothing to
+refund with — but they are reported rather than pocketed in silence.
 
 ---
 
