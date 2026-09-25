@@ -925,6 +925,14 @@ void motorOff()
 
 // Turn the coin slot on or off, through the second relay.
 //
+//  Called from exactly two places: once in setup() before any state exists,
+//  and once per pass of loop() from the single rule that derives the slot from
+//  the machine's state. Nothing else touches it, so the slot can never
+//  disagree with what the machine is doing.
+//
+//  Writing the same level repeatedly costs nothing and does not chatter the
+//  relay — the pin simply stays where it is. Only a real change is logged.
+//
 //  There are two independent polarities to get right here, which is why this
 //  is a function and not a digitalWrite:
 //
@@ -1158,7 +1166,6 @@ void rule()
 void enterFault(const char *line2)
 {
   motorOff();
-  coinAcceptorAllow(false); // stop taking money for pads we can't drop
   armClearButtonForNewFault();
   faultCount++;
   strncpy(faultLine2, line2, sizeof(faultLine2) - 1);
@@ -1191,7 +1198,6 @@ void showIdle()
 void enterEmpty()
 {
   motorOff();
-  coinAcceptorAllow(false);
   state = ST_EMPTY;
   emptyRotateMs = 0; // force an immediate repaint
   emptyMsgIdx = 0;
@@ -1294,10 +1300,8 @@ void attemptClear(const char *who)
   }
 
   state = ST_IDLE;
-  coinAcceptorAllow(true);
   beep(TONE_VEND_HZ, TONE_VEND_MS);
   showIdle();
-  LOGLN(F("Coins enabled."));
 }
 
 // THE JAM-CLEAR BUTTON — an attendant control, mounted INSIDE the locked door.
@@ -2033,7 +2037,6 @@ bool startVend(const char *why)
   say("DISPENSING...", "");
   LOG(F("Motor on — "));
   LOGLN(why);
-  coinAcceptorAllow(false); // physically refuse coins mid-vend
   motorOn();
   dispenseStartMs = millis();
   state = ST_DISPENSING;
@@ -2497,59 +2500,40 @@ void loop()
         showIdle();
       }
     }
-    else if (state == ST_DISPENSING || state == ST_DELIVERED)
+    else if (state == ST_EMPTY || state == ST_FAULT)
     {
-      // Inhibiting the acceptor only stops the NEXT coin. One already rolling
-      // through the mechanism when the vend started still finishes its pulse
-      // burst and lands here — the machine physically has that money.
-      //
-      // So bank it rather than discard it. This state is temporary and ends in
-      // IDLE within a second or two, and credit on the meter buys the next
-      // pad. Throwing it away would mean keeping the money and giving nothing
-      // back, which is the one outcome worth engineering against.
-      //
-      // "Never owe a pad we cannot deliver" still holds: here we CAN deliver,
-      // in a moment. That is exactly why EMPTY and FAULT are handled
-      // differently in the branch below.
-      if (bankCoin(coin))
-        beep(TONE_COIN_HZ, TONE_COIN_MS);
-      else
-        beep(TONE_REJECT_HZ, TONE_REJECT_MS);
-      reportCoin(cb.pulses, coin, &cb);
-
-      // Do not paint over DELIVERED's "TAKE YOUR PAD" — she needs to read it.
-      if (state == ST_DISPENSING)
-      {
-        char l2[17];
-        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
-        say("PLEASE WAIT", l2);
-      }
-    }
-    else if (state != ST_IDLE)
-    {
-      // EMPTY or FAULT. The machine cannot promise a pad at all, so this must
-      // NOT go on the meter. The coin is still lost — there is no hopper and
-      // nothing to refund with — but it is reported rather than pocketed in
-      // silence, and the acceptor was already inhibited, so this can only be a
-      // coin that was mid-flight when things went wrong.
+      // The slot was inhibited, so this can only be a coin that was already
+      // mid-flight when things went wrong. The machine cannot promise a pad,
+      // so it must not go on the meter. It is lost — the coin banked into the
+      // housing before the firmware heard a single pulse and there is no way
+      // out of there — but it is reported rather than pocketed in silence.
       beep(TONE_REJECT_HZ, TONE_REJECT_MS);
       reportCoin(cb.pulses, coin, &cb);
     }
     else
     {
+      // IDLE, DISPENSING or DELIVERED: the machine can honour this, so bank
+      // it. Mid-vend is fine — those states end in IDLE within a second or
+      // two, and the credit simply buys the next pad.
       if (bankCoin(coin))
         beep(TONE_COIN_HZ, TONE_COIN_MS);
       else
         beep(TONE_REJECT_HZ, TONE_REJECT_MS);
       reportCoin(cb.pulses, coin, &cb);
 
-      if (credit < PAD_PRICE)
+      char l1[17], l2[17];
+      if (state == ST_DISPENSING)
       {
-        char l1[17], l2[17];
+        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+        say("PLEASE WAIT", l2);
+      }
+      else if (state == ST_IDLE && credit < PAD_PRICE)
+      {
         snprintf(l1, sizeof(l1), "CREDIT KSH %u", credit);
         snprintf(l2, sizeof(l2), "NEED KSH %u MORE", PAD_PRICE - credit);
         say(l1, l2);
       }
+      // DELIVERED is left alone on purpose: "TAKE YOUR PAD" must stay up.
     }
   }
 
@@ -2565,7 +2549,6 @@ void loop()
   {
     LOGLN(F("Stock switch reports pads loaded. Back in service."));
     state = ST_IDLE;
-    coinAcceptorAllow(true);
     showIdle();
   }
 
@@ -2585,9 +2568,23 @@ void loop()
     }
   }
 
-  // Self-healing: idle and not faulted means the acceptor should be live.
-  if (state == ST_IDLE && !coinsAllowed)
-    coinAcceptorAllow(true);
+  // ---- The coin slot. One rule, evaluated here and nowhere else. ----
+  //
+  //  The acceptor is LIVE whenever the machine can still honour a coin, and
+  //  that is every state except the two where it cannot:
+  //
+  //      EMPTY  no pads to give
+  //      FAULT  something is broken
+  //
+  //  It deliberately stays live during a vend. A coin that lands mid-vend is
+  //  banked and buys the next pad, so there is nothing to protect against —
+  //  and inhibiting for every sale would work the relay twice per vend for no
+  //  benefit, which is thousands of needless operations over a machine's life.
+  //
+  //  Driving it from state in one place means the slot can never disagree with
+  //  what the machine is actually doing. There is no way to enter a state and
+  //  forget to open or close it, because nothing else touches it.
+  coinAcceptorAllow(state != ST_EMPTY && state != ST_FAULT);
 
   switch (state)
   {

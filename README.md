@@ -523,8 +523,23 @@ the next coin, after taking the money. A fault that arrives while the button is
 already held cannot ride that hold into clearing itself; it has to be released
 and pressed fresh.
 
-The acceptor is also inhibited for the duration of every vend, so a coin cannot
-arrive mid-dispense, and for as long as the stock switch says the coil is empty.
+### When the coin slot is open
+
+One rule, derived from the machine's state in one place in `loop()` and nowhere
+else:
+
+**The slot is live in every state except `EMPTY` and `FAULT`** — the two where
+the machine cannot honour a coin.
+
+It deliberately stays open **during a vend.** A coin that lands mid-vend is
+banked and buys the next pad, so there is nothing to protect against, and
+inhibiting for every sale would work the relay twice per vend for no benefit —
+thousands of needless operations over the life of a machine. The relay only
+moves when the machine genuinely goes out of service, which should be rare.
+
+Deriving it from state in a single place means the slot can never disagree with
+what the machine is doing. There is no way to enter a state and forget to open
+or close it, because nothing else touches it.
 
 **Out of stock is not a fault.** It does not latch and it does not need a
 reset: the machine inhibits coins, shows `SORRY - NO PADS`, and returns to
