@@ -390,7 +390,7 @@ const bool PADS_PRESENT_IS_LOW = true;
 // stock check is bypassed entirely and the machine behaves as it did before —
 // otherwise an unwired pin floats HIGH, reads EMPTY, and the machine sits
 // there refusing to vend while you wonder why.
-const bool PAD_SWITCH_FITTED = false;
+const bool PAD_SWITCH_FITTED = true;
 
 // --- JAM-CLEAR BUTTON ------------------------------------------------------
 // Momentary NO button between PIN_CLEAR and GND. Mount it INSIDE the locked
@@ -610,6 +610,32 @@ const uint32_t MESSAGE_HOLD_MS = 2500;
 //              Report it rather than raising this number.
 //  CONSOLE     follows  o<ms>  automatically
 const uint32_t MOTOR_LIMIT_MARGIN_MS = 2000;
+
+// ---------------------------------------------------------------------------
+//  MOTOR_NOISE_SETTLE_MS — how long the coin line stays untrusted after the
+//                          motor stops
+// ---------------------------------------------------------------------------
+//  WHAT        The coin input is not counted while the motor is running, nor
+//              for this long after it stops. Switching the relay and the coil
+//              induces edges on GPIO 18 that look exactly like coin pulses —
+//              on this machine, bursts of one or two with 21-50 ms gaps,
+//              arriving the instant the motor starts or stops. A real coin
+//              from this acceptor has 50-105 ms gaps and lasts seconds.
+//
+//              This is a HARDWARE problem and the flyback diode, the
+//              capacitors and star wiring are the cure. Muting the input is
+//              what stops the firmware spending money that was never inserted
+//              while you fix it.
+//  TOO SHORT   The turn-off spike still lands in a counted window. The relay
+//              de-energising is the worst moment, not the start.
+//  TOO LONG    A real coin inserted just after a vend is missed. The acceptor
+//              needs about 600 ms per coin anyway, so there is room here.
+//  HOW TO SET  Leave it at 500 unless the console reports discarded pulses on
+//              every vend, which means the spike outlasts it. Status counts
+//              them, so you can tell suppression working from suppression
+//              missing.
+//  CONSOLE     none — needs a reflash
+const uint32_t MOTOR_NOISE_SETTLE_MS = 500;
 
 // ---------------------------------------------------------------------------
 //  PAD_SWITCH_DEBOUNCE_MS — noise filter on the pad stock switch
@@ -855,6 +881,12 @@ portMUX_TYPE coinMux = portMUX_INITIALIZER_UNLOCKED;
 // Gap statistics for the burst being counted right now. With a 40-pulse coin
 // in the table these are the numbers that decide whether COIN_GAP_MS is safe,
 // and there is no other way to see them. Reported with every coin.
+// While this is true the coin interrupt counts nothing. Set the moment the
+// motor starts and cleared MOTOR_NOISE_SETTLE_MS after it stops.
+volatile bool coinMuted = false;
+volatile uint32_t isrMutedPulses = 0; // how much noise we threw away, for status
+uint32_t coinUnmuteMs = 0;
+
 volatile uint16_t isrGapMin = 0xFFFF;
 volatile uint16_t isrGapMax = 0;
 volatile uint32_t isrBurstStartMs = 0;
@@ -896,6 +928,7 @@ uint32_t coinsAccepted = 0;
 uint32_t coinsUnknown = 0;
 uint32_t faultCount = 0;
 uint32_t shillingsIn = 0;
+uint32_t noisePulses = 0; // induced pulses discarded, a suppression health check
 uint32_t bootMs = 0;
 
 // Loop health
@@ -983,6 +1016,24 @@ void IRAM_ATTR onCoinPulse()
 {
   uint32_t now = millis();
   portENTER_CRITICAL_ISR(&coinMux);
+
+  // THE COIN LINE IS NOT TRUSTED AROUND A MOTOR RUN.
+  //
+  //  Switching the relay and the coil induces edges on this pin that are
+  //  indistinguishable from coin pulses at the input, and they arrive in ones
+  //  and twos — which is exactly the pulse count of the cheapest coin in the
+  //  table. Counted, they become credit nobody paid, and credit nobody paid
+  //  becomes pads nobody paid for.
+  //
+  //  Inhibiting the acceptor does NOT help here: that stops the mechanism
+  //  taking a coin, it does nothing about induced voltage on a signal wire.
+  //  The only reliable answer in firmware is to stop counting.
+  if (coinMuted)
+  {
+    isrMutedPulses++;
+    portEXIT_CRITICAL_ISR(&coinMux);
+    return;
+  }
   // isrLastMs starts at 0, so a plain debounce guard would swallow a coin
   // dropped in the first COIN_PULSE_DEBOUNCE_MS after boot. isrSeenOne makes
   // the first pulse unconditional and debounces every one after it.
@@ -1261,6 +1312,14 @@ void attachCoinIsr()
 // ===========================================================================
 void motorOn()
 {
+  // Mute BEFORE the relay moves, and bin any burst already in progress — a
+  // coin that was still being read when a vend started cannot be trusted now
+  // that noise is about to be mixed into it.
+  portENTER_CRITICAL(&coinMux);
+  coinMuted = true;
+  isrBurst = 0;
+  portEXIT_CRITICAL(&coinMux);
+
   digitalWrite(PIN_RELAY, RELAY_ACTIVE_HIGH ? HIGH : LOW);
   motorOnSince = millis();
   motorRunning = true;
@@ -1271,6 +1330,9 @@ void motorOff()
 {
   digitalWrite(PIN_RELAY, RELAY_ACTIVE_HIGH ? LOW : HIGH);
   motorRunning = false;
+  // The coil collapsing as the relay opens is the WORST moment for induced
+  // pulses, worse than starting. Keep the line muted well past it.
+  coinUnmuteMs = millis() + MOTOR_NOISE_SETTLE_MS;
 }
 
 // Turn the coin slot on or off, through the second relay.
@@ -2457,6 +2519,11 @@ void printStatus()
   LOGLN(faultCount);
   LOG(F("  raw pulses   : "));
   LOGLN(isrTotal);
+  LOG(F("  motor noise  : "));
+  LOG(noisePulses);
+  LOGLN(F(" pulses discarded"));
+  if (noisePulses > 0)
+    LOGLN(F("  (any at all means the suppression is not finished)"));
   LOGLN();
   LOG(F("  uptime       : "));
   LOG((millis() - bootMs) / 1000);
@@ -2682,6 +2749,7 @@ void handleCommand(char *s)
 
   case 'r':
     vendCount = coinsAccepted = coinsUnknown = faultCount = shillingsIn = 0;
+    noisePulses = 0;
     isrTotal = 0;
     loopMaxUs = 0;
     LOGLN(F("Counters zeroed."));
@@ -3054,6 +3122,29 @@ void loop()
   buzzerService();
   pollSerial();
   clearButtonService();
+
+  // ---- Trust the coin line again once the motor has been still a while ----
+  if (coinMuted && !motorRunning && reached(now, coinUnmuteMs))
+  {
+    uint32_t junk;
+    portENTER_CRITICAL(&coinMux);
+    junk = isrMutedPulses;
+    isrMutedPulses = 0;
+    isrBurst = 0; // anything counted during the window is noise by definition
+    coinMuted = false;
+    portEXIT_CRITICAL(&coinMux);
+
+    if (junk)
+    {
+      LOG(F("Discarded "));
+      LOG(junk);
+      LOGLN(junk == 1 ? F(" pulse induced by the motor.")
+                      : F(" pulses induced by the motor."));
+      LOGLN(F("  Not coins. Every one of these would have been free credit."));
+      LOGLN(F("  Fit the flyback diode and the capacitors — see README."));
+      noisePulses += junk;
+    }
+  }
 
   // ---- Wake on the FIRST pulse, not on the finished coin ----
   //
