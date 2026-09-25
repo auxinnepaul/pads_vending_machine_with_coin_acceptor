@@ -236,6 +236,8 @@ takes the command after a short pause in typing.
   p<ksh>   set the pad price          e.g.  p20
   g<ms>    set the coin gap           e.g.  g250
   o<ms>    set the dispense timeout   e.g.  o3000
+  w<ms>    part-payment wait          e.g.  w120000
+           w0 = wait forever, never clear part payment
 
   BENCH TESTS
   m<ms>    run the motor for <ms> — time one revolution
@@ -463,6 +465,47 @@ IDLE ──coin──► decode pulses ──unknown──► reject tone, logge
 IDLE also drops to **EMPTY** the moment the stock switch opens, and climbs
 back out on its own when it closes.
 
+### Part payment and the countdown
+
+Somebody puts **KSh 10** into a **KSh 20** machine. The screen keeps asking for
+the rest and counts down, refreshed once a second:
+
+```
+CREDIT KSH 10
+ADD 10 IN 1:35
+```
+
+Default wait is **two minutes** (`CREDIT_TIMEOUT_MS`, SECTION 5). If the
+countdown reaches zero the credit is cleared and the machine returns to
+`INSERT COIN`.
+
+**Set `CREDIT_TIMEOUT_MS = 0` to wait forever.** Part payment then never
+expires — the screen just keeps asking, with no countdown:
+
+```
+CREDIT KSH 10
+ADD KSH 10 MORE
+```
+
+Try either live with `w<ms>`; `w0` is forever. Shorten it to something like
+`w15000` to watch the countdown without standing there for two minutes.
+
+**The honest trade-off.** There is no refund path — the coin banks into the
+housing before the firmware hears a pulse — so no value here gets the money
+back to the person who paid it. All this number decides is who ends up with it:
+
+| Setting | Who gets abandoned part-payment |
+|---|---|
+| Shorter | the business keeps it |
+| Longer | she gets a better chance to find the second coin |
+| `0` | it always eventually buys a pad — but for whoever walks up next |
+
+Two minutes is the default because it is long enough to find a coin, ask a
+friend, or give up honestly. Twenty seconds, which this used to be, was not.
+
+The countdown repaints **line 2 only**, without clearing the screen, so a
+once-a-second refresh does not flicker.
+
 ### The customer pays on delivery
 
 **Nothing comes off the meter until the beam confirms a pad actually fell.**
@@ -590,16 +633,10 @@ Stated here so nothing is claimed that has not been demonstrated.
   3–4 week battery figure in the client study is still arithmetic, not a
   measurement.
 - **One pad product.** The coil is wound to one pitch.
-- **Abandoned part-payment is lost, and that is a policy choice.** Somebody who
-  puts in KSh 10 and walks away loses it after `CREDIT_TIMEOUT_MS` (20 s).
-  There is no refund path — the coin banked into the housing before the
-  firmware heard a pulse. The alternative is leaving it on screen forever,
-  which does not return it either; it just gives the *next* customer a
-  half-price pad. Neither option gets the money back to the person who paid.
-  20 s is on the short side for someone hunting in a bag for a second coin, so
-  consider raising it; it is one number in SECTION 5. Credit that already
-  covers a whole pad is **never** timed out — that is a debt the machine has
-  been paid for and it waits, in IDLE and EMPTY alike.
+- **Abandoned part-payment is eventually lost, and that is a policy choice you
+  set.** See "Part payment and the countdown" above. `CREDIT_TIMEOUT_MS = 0`
+  turns it off entirely. Credit that already covers a whole pad is **never**
+  timed out at any setting.
 - **Stock is a switch, not a count.** The machine knows "empty" or "not empty",
   not "four left". A low-stock warning before a site runs dry needs the
   count-down from the last refill described in the client study, and that needs

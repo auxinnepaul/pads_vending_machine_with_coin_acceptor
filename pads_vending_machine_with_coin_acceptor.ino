@@ -417,21 +417,41 @@ uint32_t COIN_GAP_MS = 250;
 uint32_t DISPENSE_TIMEOUT_MS = 3000;
 
 // ---------------------------------------------------------------------------
-//  CREDIT_TIMEOUT_MS — forget part-payment nobody came back for
+//  CREDIT_TIMEOUT_MS — how long to keep asking for the rest of the money
 // ---------------------------------------------------------------------------
-//  WHAT        Somebody puts KSh 10 into a KSh 20 machine and walks away. This
-//              is how long that credit sits on the screen before it is
-//              cleared, so the next customer does not walk up to somebody
-//              else's money.
-//  TOO SHORT   A customer digging in her bag for a second coin loses the
-//              first one. Very easy to do at a coin slot in a hurry.
-//  TOO LONG    The next person gets a free or discounted pad, and your takings
-//              stop matching your pad count.
-//  HOW TO SET  20 seconds is a fair compromise: long enough to find a second
-//              coin, short enough that the next person is unlikely to benefit.
-//              Watch real users before changing it.
-//  CONSOLE     none — needs a reflash
-const uint32_t CREDIT_TIMEOUT_MS = 20000;
+//  WHAT        Somebody puts KSh 10 into a KSh 20 machine. For this long the
+//              screen keeps telling her what to add and counts down the time
+//              she has left, once a second. If the countdown reaches zero the
+//              credit is cleared and the machine goes back to INSERT COIN.
+//
+//              >>> SET THIS TO 0 TO WAIT FOREVER. <<<
+//              Zero means part payment never expires: the screen keeps asking
+//              for the rest indefinitely, until somebody tops it up. Nothing
+//              else changes.
+//
+//  THE HONEST  There is no refund path. The coin banks into the housing before
+//  TRADE-OFF   this firmware hears a single pulse, so no value here gets the
+//              money back to the person who paid it. All this number decides
+//              is who ends up with it:
+//
+//                shorter   the business keeps abandoned part-payment
+//                longer    she gets a better chance to find the second coin
+//                0         the money always eventually buys a pad — but for
+//                          whoever walks up next, not for her
+//
+//  TOO SHORT   A customer digging in her bag loses the coin she already put
+//              in. Twenty seconds was not enough for that; two minutes is.
+//  TOO LONG    A standing balance sits on the screen, and the next person
+//              tops up a stranger's money and gets a discounted pad. With 0
+//              that is permanent, which may be exactly what you want in a
+//              school washroom and is certainly not what you want on a
+//              machine that has to pay for itself.
+//  HOW TO SET  Two minutes is the default because it is long enough to find a
+//              coin, ask a friend, or give up honestly. Watch real users.
+//  CONSOLE     w<ms>   e.g.  w120000,  or  w0  to wait forever
+//              (shorten it to something like w15000 to test the countdown
+//              without standing there for two minutes)
+uint32_t CREDIT_TIMEOUT_MS = 120000; // 2 minutes. 0 = never expire.
 
 // ---------------------------------------------------------------------------
 //  IR_DEBOUNCE_MS — noise filter on the drop beam
@@ -696,6 +716,7 @@ bool coinIsrAttached = false;
 
 uint16_t credit = 0; // shillings on the meter
 uint32_t lastCoinMs = 0;
+uint32_t creditTickMs = 0; // next countdown repaint, see ST_IDLE
 uint32_t dispenseStartMs = 0;
 uint32_t messageUntilMs = 0;
 
@@ -1073,6 +1094,43 @@ void say(const char *l1, const char *l2 = "")
   lcd.print(l1);
   lcd.setCursor(0, 1);
   lcd.print(l2);
+}
+
+// Rewrite line 2 only, without clearing the screen first.
+//
+//  say() calls lcd.clear(), which blanks the whole display for a moment. Doing
+//  that once a second for a countdown makes the screen visibly flicker and
+//  look broken. This pads to a full 16 characters and writes over the old line
+//  in one go instead, so the display never blanks.
+void sayLine2(const char *l2)
+{
+  if (!lcdOk)
+    return;
+  char buf[17];
+  snprintf(buf, sizeof(buf), "%-16s", l2);
+  lcd.setCursor(0, 1);
+  lcd.print(buf);
+}
+
+// Build the "what to add, and how long you have" line for part payment.
+//
+//  With a timeout:     ADD 10 IN 1:35
+//  Waiting forever:    ADD KSH 10 MORE
+void creditPromptLine(char *buf, size_t n, uint32_t now)
+{
+  uint16_t owed = (PAD_PRICE > credit) ? (PAD_PRICE - credit) : 0;
+
+  if (CREDIT_TIMEOUT_MS == 0)
+  {
+    snprintf(buf, n, "ADD KSH %u MORE", owed);
+    return;
+  }
+
+  uint32_t elapsed = now - lastCoinMs;
+  uint32_t leftMs = (elapsed >= CREDIT_TIMEOUT_MS) ? 0 : (CREDIT_TIMEOUT_MS - elapsed);
+  uint32_t secs = (leftMs + 999) / 1000; // round up, so it never shows 0:00 early
+  snprintf(buf, n, "ADD %u IN %lu:%02lu",
+           owed, (unsigned long)(secs / 60), (unsigned long)(secs % 60));
 }
 
 // THE DROP SENSOR — the machine's only proof that a pad actually came out.
@@ -1866,6 +1924,8 @@ void printHelp()
   LOGLN(F("  p<ksh>   set the pad price          e.g.  p20"));
   LOGLN(F("  g<ms>    set the coin gap           e.g.  g250"));
   LOGLN(F("  o<ms>    set the dispense timeout   e.g.  o3000"));
+  LOGLN(F("  w<ms>    part-payment wait           e.g.  w120000"));
+  LOGLN(F("           w0 = wait forever, never clear part payment"));
   LOGLN();
   LOGLN(F("  BENCH TESTS"));
   LOGLN(F("  m<ms>    run the motor for <ms> — time one revolution"));
@@ -1927,6 +1987,15 @@ void printStatus()
   LOG(credit);
   LOG(F(" of KSH "));
   LOGLN(PAD_PRICE);
+  LOG(F("  part payment : "));
+  if (CREDIT_TIMEOUT_MS == 0)
+    LOGLN(F("waits forever, never cleared"));
+  else
+  {
+    LOG(F("cleared after "));
+    LOG(CREDIT_TIMEOUT_MS / 1000);
+    LOGLN(F(" s"));
+  }
   LOG(F("  motor        : "));
   LOGLN(motorRunning ? F("RUNNING") : F("off"));
   LOG(F("  chute beam   : "));
@@ -2211,6 +2280,25 @@ void handleCommand(char *s)
     if (COIN_GAP_MS <= COIN_PULSE_DEBOUNCE_MS * 2)
       LOGLN(F("WARNING: that is too close to the debounce."));
     LOGLN(F("Not saved. Put it in SECTION 5 to keep it."));
+    break;
+
+  case 'w':
+    if (n < 0 || n > 3600000L)
+    {
+      LOGLN(F("Use w0 (wait forever) to w3600000 (one hour)."));
+      break;
+    }
+    CREDIT_TIMEOUT_MS = (uint32_t)n;
+    if (CREDIT_TIMEOUT_MS == 0)
+      LOGLN(F("Part payment will now WAIT FOREVER. It never expires."));
+    else
+    {
+      LOG(F("Part payment now waits "));
+      LOG(CREDIT_TIMEOUT_MS / 1000);
+      LOGLN(F(" s before it is cleared."));
+    }
+    LOGLN(F("Not saved. Put it in SECTION 5 to keep it."));
+    creditTickMs = 0; // repaint the countdown straight away
     break;
 
   case 'o':
@@ -2567,8 +2655,9 @@ void loop()
       else if (state == ST_IDLE && credit < PAD_PRICE)
       {
         snprintf(l1, sizeof(l1), "CREDIT KSH %u", credit);
-        snprintf(l2, sizeof(l2), "NEED KSH %u MORE", PAD_PRICE - credit);
+        creditPromptLine(l2, sizeof(l2), now);
         say(l1, l2);
+        creditTickMs = now + 1000; // countdown continues from here
       }
       // DELIVERED is left alone on purpose: "TAKE YOUR PAD" must stay up.
     }
@@ -2629,14 +2718,34 @@ void loop()
   // -----------------------------------------------------------------
   case ST_IDLE:
   {
-    // Forget stale part-payment so the next customer starts clean.
-    if (credit > 0 && credit < PAD_PRICE && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
+    // ---- Part payment: keep asking, and show how long is left. ----
+    if (credit > 0 && credit < PAD_PRICE)
     {
-      LOG(F("Partial credit of KSH "));
-      LOG(credit);
-      LOGLN(F(" timed out, cleared."));
-      credit = 0;
-      showIdle();
+      // Repaint line 2 once a second. Line 1 already says what she has, and
+      // does not change until another coin lands, so it is left alone.
+      if (reached(now, creditTickMs))
+      {
+        creditTickMs = now + 1000;
+        char l2[17];
+        creditPromptLine(l2, sizeof(l2), now);
+        sayLine2(l2);
+      }
+
+      // CREDIT_TIMEOUT_MS of 0 means wait forever, so the clock never runs
+      // out. Without this guard a zero would make (now - lastCoinMs) > 0 true
+      // almost immediately and wipe the credit on the very next pass.
+      if (CREDIT_TIMEOUT_MS > 0 && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
+      {
+        LOG(F("Part payment of KSH "));
+        LOG(credit);
+        LOG(F(" timed out after "));
+        LOG(CREDIT_TIMEOUT_MS / 1000);
+        LOGLN(F(" s, cleared."));
+        LOGLN(F("  Nobody came back for it. The coin is in the box and there"));
+        LOGLN(F("  is no way to return it — see CREDIT_TIMEOUT_MS."));
+        credit = 0;
+        showIdle();
+      }
     }
 
     // THE CUSTOMER PAYS ON DELIVERY, NOT ON THE MOTOR STARTING.
@@ -2762,9 +2871,10 @@ void loop()
     //  in the box and no pad out of it, which is the exact failure that paying
     //  on delivery exists to prevent — it would be pointless to fix that at the
     //  vend and then undo it with a timeout twenty seconds later.
-    if (credit > 0 && credit < PAD_PRICE && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
+    if (CREDIT_TIMEOUT_MS > 0 && credit > 0 && credit < PAD_PRICE &&
+        (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
     {
-      LOG(F("Partial credit of KSH "));
+      LOG(F("Part payment of KSH "));
       LOG(credit);
       LOGLN(F(" timed out while out of stock, cleared."));
       credit = 0;
