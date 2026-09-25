@@ -866,6 +866,28 @@ inhibits the coin acceptor, so a jammed or empty machine physically refuses
 coins instead of eating them. The LCD rotates `OUT OF ORDER` over the reason,
 `NO COINS TAKEN`, and `HOLD RESET BTN`.
 
+### Long messages are paged, not abbreviated
+
+Sixteen columns is not a reason to write in abbreviations. `HOLD BTN 1 SEC` is
+what you get from squeezing a sentence into the hardware. The display pages
+whole sentences across frames instead, breaking on word boundaries:
+
+```
++----------------+  +----------------+  +----------------+
+|PAID - NO PAD   |  |PAID - NO PAD   |  |PAID - NO PAD   |
+|HOLD THE BUTTON |  |FOR 1 SECOND TO |  |TRY AGAIN       |
++----------------+  +----------------+  +----------------+
+```
+
+The top line holds still as an anchor while the bottom moves. `sayPaged()`
+cycles one page per call for screens that already rotate; `sayAllPages()` walks
+through once for one-shot messages like a rejected coin.
+
+**The accepted-coin list is built from `COIN_TABLE` at boot**, so editing
+SECTION 2 changes what the screen says without anyone remembering to. A
+rejected coin now shows that list rather than `SEE SERIAL`, which means nothing
+to somebody standing in a washroom.
+
 ### The retry button is for the customer, not for staff
 
 By the time a vend fails, her coin is already in the cash box and the machine

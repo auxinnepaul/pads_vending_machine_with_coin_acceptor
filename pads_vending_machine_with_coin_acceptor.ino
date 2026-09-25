@@ -938,6 +938,8 @@ uint16_t creditInFlash = 0;       // what we last successfully wrote
 uint16_t credit = 0; // shillings on the meter
 uint32_t lastCoinMs = 0;
 uint32_t creditTickMs = 0; // next countdown repaint, see ST_IDLE
+uint8_t idleMsgIdx = 0;    // which page of the idle prompt is showing
+uint32_t idleRotateMs = 0; // next idle repaint
 uint32_t dispenseStartMs = 0;
 uint32_t messageUntilMs = 0;
 
@@ -1560,6 +1562,107 @@ void sayLine2(const char *l2)
   lcd.print(buf);
 }
 
+// Break a long line into 16-character pages, on word boundaries.
+//
+//  WHY THIS EXISTS. Sixteen columns is not a reason to write in abbreviations.
+//  "HOLD BTN 1 SEC" is what you get from squeezing a sentence into the
+//  hardware; "HOLD THE BUTTON / FOR 1 SECOND / TO TRY AGAIN" across three
+//  frames is the same hardware used properly, and a stranger in a hurry can
+//  actually read it.
+//
+//  Copies page `page` into `out` and returns how many pages there are, so the
+//  caller can cycle. Words are never split unless a single word is longer than
+//  the display, in which case it is cut — nothing else can be done with it.
+uint8_t lcdPage(const char *text, uint8_t page, char *out, size_t n)
+{
+  uint8_t pages = 0;
+  size_t i = 0, len = strlen(text);
+  out[0] = 0;
+
+  while (i < len)
+  {
+    while (i < len && text[i] == ' ')
+      i++; // a page never starts on a space
+    if (i >= len)
+      break;
+
+    size_t remaining = len - i;
+    size_t take = remaining;
+    if (remaining > 16)
+    {
+      take = 16;
+      if (text[i + 16] != ' ')
+      {
+        // Back off to the last space that fits, so a word stays whole.
+        size_t b = 16;
+        while (b > 0 && text[i + b] != ' ')
+          b--;
+        if (b > 0)
+          take = b;
+      }
+    }
+
+    if (pages == page)
+    {
+      size_t c = (take < n - 1) ? take : n - 1;
+      memcpy(out, text + i, c);
+      out[c] = 0;
+    }
+    i += take;
+    pages++;
+  }
+  return pages ? pages : 1;
+}
+
+// Hold l1 still on the top line and cycle l2's pages underneath it, one per
+// call. The static top line gives the reader an anchor while the rest moves.
+void sayPaged(const char *l1, const char *l2, uint8_t &page)
+{
+  char buf[17];
+  uint8_t pages = lcdPage(l2, page, buf, sizeof(buf));
+  say(l1, buf);
+  page = (uint8_t)((page + 1) % pages);
+}
+
+// Show every page of a long line once, holding each. For one-shot messages —
+// a rejected coin, a blocked chute — which have no rotation to live in.
+void sayAllPages(const char *l1, const char *l2, uint32_t msPerPage)
+{
+  char buf[17];
+  uint8_t pages = lcdPage(l2, 0, buf, sizeof(buf));
+  for (uint8_t i = 0; i < pages; i++)
+  {
+    lcdPage(l2, i, buf, sizeof(buf));
+    say(l1, buf);
+    holdFor(msPerPage);
+  }
+}
+
+// What this machine takes, built from COIN_TABLE so it can never go stale.
+// Edit SECTION 2 and the screen follows without anybody remembering to.
+char acceptedCoins[96] = "";
+
+void buildAcceptedCoins()
+{
+  char *w = acceptedCoins;
+  size_t left = sizeof(acceptedCoins);
+  int n = snprintf(w, left, "INSERT A COIN - THIS MACHINE TAKES KSH");
+  if (n < 0 || (size_t)n >= left)
+    return;
+  w += n;
+  left -= n;
+
+  for (uint8_t i = 0; i < COIN_TABLE_LEN; i++)
+  {
+    const char *sep = (i == 0) ? " " : (i + 1 == COIN_TABLE_LEN) ? " OR " : " ";
+    n = snprintf(w, left, "%s%u", sep, COIN_TABLE[i].value);
+    if (n < 0 || (size_t)n >= left)
+      return;
+    w += n;
+    left -= n;
+  }
+}
+
 // Build the "what to add, and how long you have" line for part payment.
 //
 //  With a timeout:     ADD 10 IN 1:35
@@ -1725,8 +1828,12 @@ void showIdle()
   }
   else
   {
+    // Nothing owed. Cycle what the machine actually accepts rather than a bare
+    // "INSERT COIN" that leaves her guessing which coins are any good.
     snprintf(l1, sizeof(l1), "PAD = KSH %u", PAD_PRICE);
-    snprintf(l2, sizeof(l2), "INSERT COIN");
+    sayPaged(l1, acceptedCoins, idleMsgIdx);
+    idleRotateMs = millis() + FAULT_ROTATE_MS;
+    return;
   }
   say(l1, l2);
 }
@@ -1836,8 +1943,9 @@ void attemptClear(const char *who, bool fromButton)
 
   if (irStable)
   {
-    say("CLEAR THE CHUTE", "THEN HOLD AGAIN");
     beep(TONE_REJECT_HZ, TONE_REJECT_MS);
+    sayAllPages("CHUTE BLOCKED",
+                "PLEASE CLEAR THE CHUTE THEN HOLD THE BUTTON AGAIN", 1400);
     LOG(F("Refusing to clear ("));
     LOG(who);
     LOGLN(F("): the beam still reads BLOCKED."));
@@ -1857,8 +1965,13 @@ void attemptClear(const char *who, bool fromButton)
     selfTestPassed = selfTest(true);
     if (!selfTestPassed)
     {
-      say("STILL FAULTY", haltReason[0] ? haltReason : "SEE SERIAL");
       beep(TONE_REJECT_HZ, TONE_REJECT_MS);
+      {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "STILL FAULTY - %s - %s",
+                 haltReason[0] ? haltReason : "SEE SERIAL", SERVICE_CONTACT);
+        sayAllPages("OUT OF ORDER", msg, 1500);
+      }
       LOG(F("Refusing to clear ("));
       LOG(who);
       LOGLN(F("): the self-test still fails."));
@@ -3128,6 +3241,7 @@ void setup()
                                : true;
   }
 
+  buildAcceptedCoins();
   buzzerInit();
 
   // The meter balance is the only thing this firmware keeps in flash.
@@ -3163,7 +3277,12 @@ void setup()
 
   if (!selfTestPassed && HALT_ON_SELFTEST_FAIL)
   {
-    say("SETUP ERROR", haltReason[0] ? haltReason : "SEE SERIAL");
+    {
+      char msg[96];
+      snprintf(msg, sizeof(msg), "%s - THIS MACHINE NEEDS ATTENTION - %s",
+               haltReason[0] ? haltReason : "SELF-TEST FAILED", SERVICE_CONTACT);
+      sayAllPages("OUT OF ORDER", msg, 1600);
+    }
     armClearButtonForNewFault();
     LOGLN();
     LOGLN(F("HALTED. The self-test found something that would make this"));
@@ -3368,12 +3487,12 @@ void loop()
     {
       coinsUnknown++;
       beep(TONE_REJECT_HZ, TONE_REJECT_MS);
-      if (state == ST_IDLE)
-        say("COIN NOT KNOWN", "SEE SERIAL");
       reportCoin(cb.pulses, coin, &cb);
       if (state == ST_IDLE)
       {
-        holdFor(1200);
+        // "SEE SERIAL" means nothing to somebody standing in a washroom. Tell
+        // her which coins this machine actually takes.
+        sayAllPages("COIN NOT TAKEN", acceptedCoins, 1400);
         showIdle();
       }
     }
@@ -3688,29 +3807,15 @@ void loop()
     if (reached(now, emptyRotateMs))
     {
       emptyRotateMs = now + FAULT_ROTATE_MS;
-      char l2[17];
-      switch (emptyMsgIdx)
-      {
-      case 0:
-        strncpy(l2, "NO COINS TAKEN", sizeof(l2));
-        break;
-      case 1:
-        strncpy(l2, "REFILL NEEDED", sizeof(l2));
-        break;
-      default:
-        // Only reachable while credit > 0, except for the one frame after it
-        // times out with the index already parked here.
-        if (credit > 0)
-          snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
-        else
-          strncpy(l2, "NO COINS TAKEN", sizeof(l2));
-        break;
-      }
-      l2[sizeof(l2) - 1] = 0;
-      say("SORRY - NO PADS", l2);
-      // The third panel only exists while somebody is owed something.
-      uint8_t panels = (credit > 0) ? 3 : 2;
-      emptyMsgIdx = (emptyMsgIdx + 1) % panels;
+      char msg[80];
+      if (credit > 0)
+        snprintf(msg, sizeof(msg),
+                 "NO COINS ARE BEING TAKEN - YOUR KSH %u IS SAFE AND WAITING",
+                 credit);
+      else
+        snprintf(msg, sizeof(msg),
+                 "NO COINS ARE BEING TAKEN - PLEASE COME BACK LATER");
+      sayPaged("SORRY - NO PADS", msg, emptyMsgIdx);
     }
     break;
   }
@@ -3730,41 +3835,44 @@ void loop()
       //  Three different people can be standing here and they need three
       //  different things said to them. Every line below is 16 characters or
       //  fewer, because the display silently cuts off anything longer.
+      //  Three different people can be standing here and they need three
+      //  different things said to them. Each bottom line is written as a whole
+      //  sentence and paged across frames rather than abbreviated to fit.
       if (buttonRetries >= MAX_BUTTON_RETRIES)
       {
         // Out of retries. She cannot fix this, so stop telling her to try and
         // tell her who can.
-        say("SORRY - JAMMED", faultMsgIdx == 0 ? "GET HELP" : SERVICE_CONTACT);
-        faultMsgIdx = (faultMsgIdx + 1) % 2;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "SORRY THIS NEEDS HELP - %s", SERVICE_CONTACT);
+        sayPaged("JAMMED", msg, faultMsgIdx);
       }
       else if (credit >= PAD_PRICE)
       {
         // She has paid and has no pad, and the button will try again for her.
-        say("PAID - NO PAD", faultMsgIdx == 0 ? "HOLD BTN 1 SEC" : "TO TRY AGAIN");
-        faultMsgIdx = (faultMsgIdx + 1) % 2;
+        sayPaged("PAID - NO PAD",
+                 "HOLD THE BUTTON FOR 1 SECOND TO TRY AGAIN", faultMsgIdx);
       }
       else
       {
         // Nobody is owed anything, so it is simply broken.
-        const char *l2;
-        switch (faultMsgIdx)
-        {
-        case 0:
-          l2 = faultLine2[0] ? faultLine2 : "SEE SERIAL";
-          break;
-        case 1:
-          l2 = "NO COINS TAKEN";
-          break;
-        default:
-          l2 = SERVICE_CONTACT;
-          break;
-        }
-        say("OUT OF ORDER", l2);
-        faultMsgIdx = (faultMsgIdx + 1) % 3;
+        char msg[80];
+        snprintf(msg, sizeof(msg), "%s - NO COINS ARE BEING TAKEN - %s",
+                 faultLine2[0] ? faultLine2 : "SEE SERIAL", SERVICE_CONTACT);
+        sayPaged("OUT OF ORDER", msg, faultMsgIdx);
       }
     }
     break;
   }
+  }
+
+  // ---- Cycle the idle prompt so the whole of it gets read ----
+  if (state == ST_IDLE && credit == 0 && backlightOn && lcdOk &&
+      reached(now, idleRotateMs))
+  {
+    idleRotateMs = now + FAULT_ROTATE_MS;
+    char l1[17];
+    snprintf(l1, sizeof(l1), "PAD = KSH %u", PAD_PRICE);
+    sayPaged(l1, acceptedCoins, idleMsgIdx);
   }
 
   // ---- Rebuild the display periodically, whatever happened to it ----
