@@ -350,9 +350,17 @@ IDLE ──coin──► decode pulses ──unknown──► reject tone, logge
                DISPENSING ──beam breaks──► DELIVERED ──2.5 s──► IDLE
                      │
               timeout (3 s)
-                     ▼
-            FAULT "EMPTY OR JAMMED"
+                     │
+       ┌─────────────┴─────────────┐
+  stock says empty            stock says full,
+                              or no stock switch
+       ▼                             ▼
+     EMPTY                     FAULT "JAMMED"
+ (self-recovers)              (needs the button)
 ```
+
+IDLE also drops to **EMPTY** the moment the stock switch opens, and climbs
+back out on its own when it closes.
 
 **The money is taken only once the motor is actually turning.** If the beam
 check refuses, the credit stays on the meter rather than vanishing into a fault
@@ -381,6 +389,17 @@ arrive mid-dispense, and for as long as the stock switch says the coil is empty.
 reset: the machine inhibits coins, shows `SORRY - NO PADS`, and returns to
 service on its own the moment the switch says pads are back. Credit already on
 the meter survives the refill, or times out like any other partial payment.
+
+**A dispense that times out asks the stock switch which it was.** Running dry
+and jamming want opposite handling — one is routine and must come back by
+itself after a refill, the other needs somebody to open the door. If the switch
+says the coil is empty the machine goes to EMPTY, not to a latched fault, so a
+site that simply ran out does not sit dead waiting for a call-out. With no
+stock switch fitted it cannot tell, so it stays cautious and latches
+`EMPTY OR JAMMED` as before.
+
+Clearing a jam on an empty coil goes straight to EMPTY rather than flicking
+into service for the one pass it would take the stock check to notice.
 
 **A hard motor limit** is checked every pass of the loop, in every state,
 independently of the state machine. Even a firmware bug cannot leave the coil

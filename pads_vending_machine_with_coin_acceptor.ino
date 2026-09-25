@@ -706,17 +706,6 @@ void rule()
   LOGLN(F("-----------------------------------------------------"));
 }
 
-// void enterFault(const char *line2) {
-//   motorOff();
-//   faultCount++;
-//   say("OUT OF ORDER", line2);
-//   beep(TONE_FAULT_HZ, TONE_FAULT_MS);
-//   state = ST_FAULT;
-//   LOGLN();
-//   LOG(F("*** FAULT: ")); LOGLN(line2);
-//   LOGLN(F("*** Latched. Power-cycle, or type  x  to clear."));
-// }
-
 void enterFault(const char *line2)
 {
   motorOff();
@@ -752,6 +741,7 @@ void showIdle()
 // returns to service on its own. Nobody drives out to reset it after a refill.
 void enterEmpty()
 {
+  motorOff();
   coinAcceptorAllow(false);
   state = ST_EMPTY;
   emptyRotateMs = 0; // force an immediate repaint
@@ -826,13 +816,27 @@ void attemptClear(const char *who)
 
   motorOff();
   credit = 0;
+  LOG(F("Fault cleared by "));
+  LOGLN(who);
+  LOGLN(F("Credit zeroed."));
+
+  // Clearing a jam on an empty coil must not flick the machine into service
+  // for the one pass it takes the stock check to notice — that is an audible
+  // double-click of the inhibit relay and a moment when the slot is live.
+  // Go straight to OUT OF STOCK and say so.
+  if (!padsPresent())
+  {
+    LOGLN(F("The coil is empty though, so it stays out of service until"));
+    LOGLN(F("someone refills it. Coins stay inhibited."));
+    enterEmpty();
+    return;
+  }
+
   state = ST_IDLE;
   coinAcceptorAllow(true);
   beep(TONE_VEND_HZ, TONE_VEND_MS);
   showIdle();
-  LOG(F("Fault cleared by "));
-  LOGLN(who);
-  LOGLN(F("Credit zeroed, coins enabled."));
+  LOGLN(F("Coins enabled."));
 }
 
 void clearButtonService()
@@ -2004,13 +2008,28 @@ void loop()
     }
     else if ((now - dispenseStartMs) > DISPENSE_TIMEOUT_MS)
     {
-      // Coil turned but nothing fell: empty, or a pad is wedged.
+      motorOff();
       LOG(F("No pad in "));
       LOG(DISPENSE_TIMEOUT_MS);
       LOGLN(F(" ms."));
-      LOGLN(F("  Coil empty, pad wedged, or the timeout is too short"));
-      LOGLN(F("  for this motor. Time a revolution with  m1000."));
-      enterFault("EMPTY OR JAMMED");
+      LOGLN(F("  The customer has paid for this pad and has not got it."));
+
+      // The stock switch can tell the two causes apart, and they want
+      // opposite handling: running dry is routine and has to come back on its
+      // own after a refill, while a jam needs somebody to open the door.
+      // Latching OUT OF ORDER every time the machine merely ran out would
+      // waste a call-out and leave the site dead until someone drove there.
+      if (PAD_SWITCH_FITTED && !padsPresent())
+      {
+        LOGLN(F("  Stock switch says the coil is empty, so this is not a jam."));
+        enterEmpty();
+      }
+      else
+      {
+        LOGLN(F("  Pad wedged, coil empty, or the timeout is too short for"));
+        LOGLN(F("  this motor. Time a revolution with  m1000."));
+        enterFault(PAD_SWITCH_FITTED ? "JAMMED" : "EMPTY OR JAMMED");
+      }
     }
     break;
   }
@@ -2058,7 +2077,12 @@ void loop()
         strncpy(l2, "REFILL NEEDED", sizeof(l2));
         break;
       default:
-        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+        // Only reachable while credit > 0, except for the one frame after it
+        // times out with the index already parked here.
+        if (credit > 0)
+          snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+        else
+          strncpy(l2, "NO COINS TAKEN", sizeof(l2));
         break;
       }
       l2[sizeof(l2) - 1] = 0;
