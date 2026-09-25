@@ -10,6 +10,11 @@ out of scope for this build.
 Everything you need to bring it up, calibrate it and diagnose it is on the
 **serial console at 115200**. Type `?` for the command list.
 
+**[Bench wiring card →](https://claude.ai/artifact/36fmakGo1G3eLnhrZJe6Qf)** —
+the power tree, the pin map, the three things that kill hardware and the
+bring-up order, on one page you can open on a phone at the bench. *Private to
+the Bricapa account; the tables below are the authoritative copy.*
+
 ---
 
 ## Hardware
@@ -35,12 +40,28 @@ Everything you need to bring it up, calibrate it and diagnose it is on the
 
 ## Wiring
 
+Star-wire it. Every load takes its own pair back to the supply — daisy-chaining
+puts the acceptor's surge straight across the LCD's supply pins, which is what
+corrupts the display.
+
 ```
-12 V adaptor ─┬─ LM2596 → 5.0 V → Schottky → ESP32 VIN
-              │                        └─ ESP32 3V3 → KY-032 VCC
-              ├─ coin acceptor (12 V)
-              └─ relay COM/NO → motor  ── flyback diode across motor terminals
+12 V adaptor ─┬─ coin acceptor            + 1000 µF, 100 nF at its terminals
+ (+ 1000 µF)  │        ▲
+              │        └── relay 2 NC across the 2-pin inhibit port
+              │            (dry contact only — that pin can sit at 12 V)
+              │
+              ├─ relay 1 COM/NO → motor   + flyback diode, band to POSITIVE
+              │
+              └─ LM2596 → 5.0 V ─┬─ ESP32 VIN
+                                 │     └─ ESP32 3V3 → KY-032 VCC
+                                 ├─ I2C LCD          + 100 µF, 100 nF at it
+                                 ├─ relay module VCC (both channels)
+                                 └─ buzzer
 ```
+
+See the [wiring card](https://claude.ai/artifact/36fmakGo1G3eLnhrZJe6Qf) for the
+same thing drawn out, including the two pull resistors and which way the diode
+band faces.
 
 | Signal | GPIO | Notes |
 |---|---|---|
