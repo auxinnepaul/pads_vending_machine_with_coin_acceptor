@@ -1174,6 +1174,15 @@ bool ensureCreditStore()
     return false;
 
   creditStoreOpen = true;
+
+  // Same optimistic assumption setup() makes: a store that opens is presumed
+  // to write until a write actually fails. Without this the alarm raised when
+  // it would not open stays latched forever, and  s  and  d  keep reporting a
+  // flash fault that has healed — sending somebody to chase a problem that is
+  // no longer there. A diagnostic that lies is worse than no diagnostic.
+  creditPersistOk = true;
+  creditPersistWarned = false;
+
   uint16_t stored = prefs.getUShort("credit", 0);
   creditInFlash = stored;
 
@@ -1196,7 +1205,13 @@ bool ensureCreditStore()
     }
     else
     {
+      // The store opens but will not take data. That is the other failure, and
+      // it is now proven rather than assumed, so say so.
+      creditPersistOk = false;
+      creditPersistWarned = true;
       LOGLN(F("  Stale and higher than the meter, but it will not overwrite."));
+      LOGLN(F("  The store opens and refuses writes. A later boot could still"));
+      LOGLN(F("  restore this and vend an unpaid pad."));
     }
   }
   return true;
