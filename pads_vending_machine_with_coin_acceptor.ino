@@ -653,6 +653,28 @@ const char *stateName(State s)
 LiquidCrystal_I2C lcd(LCD_I2C_ADDR, 16, 2);
 bool lcdOk = false; // false = run headless, console only
 
+// Set whenever the motor runs; cleared by the next say().
+//
+//  WHY THIS EXISTS. The LCD is driven over I2C in 4-BIT mode — every byte
+//  goes across as two nibbles. If the display misses a single nibble, every
+//  byte after it is shifted by four bits, and what comes out is not wrong
+//  letters but gibberish: the HD44780 font has Japanese katakana at 0xA0-0xDF,
+//  so mangled bytes land there and the screen fills with what look like
+//  Chinese characters. It stays that way until the display is re-initialised,
+//  because nothing about the LCD knows it lost sync.
+//
+//  The thing that makes it miss a nibble is the motor. Switching the coil
+//  drops the rail for a few milliseconds, the LCD controller browns out while
+//  the ESP32 — which has a much better supply — carries on talking to it.
+//
+//  So: after every motor run, rebuild the display from scratch before writing
+//  to it again. It costs about 50 ms once per vend and it makes the symptom
+//  self-clear instead of persisting until somebody power-cycles the machine.
+//
+//  This is a belt-and-braces measure, not a substitute for fixing the supply.
+//  See README, "Funny symbols on the screen".
+bool lcdNeedsReinit = false;
+
 // Coin pulses are counted in an ISR and decoded into whole coins in loop().
 volatile uint16_t isrBurst = 0;
 volatile uint32_t isrLastMs = 0;
@@ -892,6 +914,7 @@ void motorOn()
   digitalWrite(PIN_RELAY, RELAY_ACTIVE_HIGH ? HIGH : LOW);
   motorOnSince = millis();
   motorRunning = true;
+  lcdNeedsReinit = true; // the coil kick is what corrupts the display
 }
 
 void motorOff()
@@ -1019,6 +1042,12 @@ void say(const char *l1, const char *l2 = "")
 {
   if (!lcdOk)
     return;
+  if (lcdNeedsReinit)
+  {
+    lcdNeedsReinit = false;
+    lcd.init(); // re-sync the 4-bit interface after a motor-induced dip
+    lcd.backlight();
+  }
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(l1);
@@ -2045,7 +2074,11 @@ void handleCommand(char *s)
       LOGLN(F("No LCD found. Run  z  to scan."));
       break;
     }
-    LOGLN(F("LCD: both lines filled, then back to idle."));
+    LOGLN(F("LCD: re-initialised, both lines filled, then back to idle."));
+    LOGLN(F("If the screen was showing garbage, this clears it. If it comes"));
+    LOGLN(F("back after the next vend, the motor is browning out the display"));
+    LOGLN(F("— see README, 'Funny symbols on the screen'."));
+    lcdNeedsReinit = true; // force a full rebuild, that is the point of  l
     say("0123456789ABCDEF", "BRICAPA  v" FW_VERSION);
     holdFor(2000);
     showIdle();
@@ -2296,6 +2329,10 @@ void setup()
   buzzerInit();
 
   Wire.begin(PIN_SDA, PIN_SCL);
+  // 100 kHz, stated rather than inherited. This is the slowest standard I2C
+  // rate and the most tolerant of long unshielded runs to a display mounted on
+  // a cabinet door. There is nothing on this bus that needs to go faster.
+  Wire.setClock(100000);
 
   selfTestPassed = selfTest(true);
 

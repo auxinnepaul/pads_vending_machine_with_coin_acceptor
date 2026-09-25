@@ -105,9 +105,92 @@ that pin sits at 12 V.
 
 ## Building it
 
-Install **LiquidCrystal I2C** (Frank de Brabander) via Library Manager. It
-declares itself as AVR-only, so the IDE prints an architecture warning on
-ESP32. Ignore it — the library works.
+Install **LiquidCrystal I2C** (Frank de Brabander) via Library Manager.
+
+### That architecture warning is not an error
+
+```
+WARNING: library LiquidCrystal_I2C claims to run on avr architecture(s)
+and may be incompatible with your current board which runs on esp32
+```
+
+It is a **warning**, the sketch compiles, and the library is the right one.
+The cause is one line of metadata in the library's own `library.properties`:
+
+```
+architectures=avr
+```
+
+That file was written when the library only targeted AVR boards, and it has
+never been updated. The IDE compares that line against your board and warns on
+any mismatch — it has not inspected the code. The library itself only uses
+`Wire` and standard Arduino calls, all of which exist on ESP32, which is why it
+builds and runs cleanly.
+
+To silence it, change that one line to `architectures=*` in:
+
+```
+~/Documents/Arduino/libraries/LiquidCrystal_I2C/library.properties
+```
+
+Purely cosmetic, and Library Manager will overwrite it on the next update.
+Leaving it alone is fine.
+
+---
+
+## Funny symbols on the screen
+
+If the display sometimes fills with gibberish that looks like Chinese or
+Japanese characters, that is a **specific, diagnosable fault**, not a random
+glitch — and the character set is the clue.
+
+**What is happening.** The LCD is driven in **4-bit mode**: every byte crosses
+the wire as two nibbles. Miss a single nibble and every byte after it is
+shifted by four bits. The HD44780's built-in font has **Japanese katakana at
+0xA0–0xDF**, so mangled bytes land in that block and the screen fills with what
+look like Chinese characters. Nothing about the display knows it has lost sync,
+so it stays corrupted until it is re-initialised.
+
+**What makes it miss a nibble.** Almost always the motor. Switching the coil
+drops the 5 V rail for a few milliseconds. The LCD controller browns out, while
+the ESP32 — which has a far better supply and a regulator of its own — carries
+straight on talking to it. That is why it happens *sometimes*: it happens on a
+vend.
+
+**Fix the supply first.** This is the real cure:
+
+1. **Fit the 1000 µF across the 12 V rail**, close to the buck converter. This
+   is exactly what it is for.
+2. **Fit the flyback diode across the motor terminals**, cathode to positive.
+   Without it the coil dumps a large reverse spike onto everything every time
+   the relay opens.
+3. **Feed the LCD from the buck output directly**, not daisy-chained through
+   the ESP32's 5V pin. Star-wire the 5 V rail: buck → each load separately, so
+   the motor's dip is not shared through a thin header trace.
+4. **Keep SDA and SCL short.** A display on a cabinet door with 40 cm of loose
+   jumper wire is an antenna. Twist SDA and SCL with a ground wire, or use
+   ribbon with grounds between.
+5. **Check the reset reason.** Type `d` after it happens. If section [1] says
+   `BROWNOUT`, the dip is bad enough to reset the whole board and items 1–3 are
+   not optional.
+
+**The firmware also self-heals.** `motorOn()` sets a flag, and the next screen
+write re-initialises the display from scratch before painting. So corruption
+introduced by a vend is cleared by the very next message — normally within
+about two seconds, rather than persisting until someone power-cycles the
+machine. It costs ~50 ms once per vend.
+
+That is belt-and-braces, **not a substitute for fixing the supply.** If you can
+see garbage appear and then clear on the next message, the firmware is doing
+its job and your rail still needs the capacitor.
+
+**To test recovery by hand:** type `l`. It forces a full re-initialisation and
+draws a test pattern. If that clears the screen but it goes bad again on the
+next vend, it is the motor, and the list above is your fix.
+
+The I2C bus is also set explicitly to 100 kHz — the slowest standard rate and
+the most tolerant of long unshielded runs. Nothing on this bus needs to be
+faster.
 
 Board: **ESP32 Dev Module** (`esp32:esp32:esp32`).
 
