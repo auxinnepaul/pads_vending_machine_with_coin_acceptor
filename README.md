@@ -671,10 +671,28 @@ boot. That is a pad already paid for.
 
 Turn it off with `REMEMBER_CREDIT_ACROSS_POWER_LOSS` in SECTION 3.
 
-**What it costs.** Three small writes per sale at most, and only when the value
-actually changes — `putUShort()` compares before writing. NVS is wear-levelled
-and rated in the tens of thousands of cycles per sector, so at fifty sales a
-day this is years of life. Not free, but cheap against the alternative.
+**What it costs.** One write per coin, plus one on the vend. With KSh 5 coins
+and a KSh 20 pad that is **five writes for a single sale** — the smallest coin
+in the table sets the worst case, so re-check this if you ever add a smaller
+one. Roughly 90,000 writes a year at fifty sales a day.
+
+Still not a wear problem, but for a different reason than you might assume:
+NVS packs many writes into a flash page before erasing anything, and
+wear-levels those erases across the partition, so the flash sees far fewer
+erase cycles than the firmware does writes. Decades, comfortably.
+
+Redundant writes are skipped by comparing against a shadow copy of what is
+actually stored. **`putUShort()` does not do this for you** — it calls
+`nvs_set_u16()` and commits every time, whatever the old value was.
+
+**If flash stops accepting writes**, the machine says so loudly, once, and
+keeps trading — refusing sales because flash is unhappy turns a degraded
+machine into a dead one. `s` and `d` both keep reporting it, so the power-cut
+protection is never quietly absent:
+
+```
+balance saved: NO — a power cut will lose it
+```
 
 **What it does not fix.** It restores the *claim*, not the cash. Nothing can
 return the coin. And there is a window of a few milliseconds between a pad

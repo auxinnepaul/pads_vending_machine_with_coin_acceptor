@@ -318,10 +318,18 @@ const bool KEEP_CHANGE_AS_CREDIT = true;
 //  protects the customer standing there; a long one does not leave a standing
 //  balance for a stranger.
 //
-//  COST. Three small writes per sale at most, and only when the value actually
-//  changes. NVS is wear-levelled and rated in the tens of thousands of cycles
-//  per sector, so at fifty sales a day this is years of life, not months. It
-//  is not free, and it is the only thing this firmware writes to flash.
+//  COST. One write per coin plus one on the vend. With KSh 5 coins and a KSh 20
+//  pad that is FIVE writes for a single sale, not three — the smallest coin in
+//  the table sets the worst case, so re-check this if you add a smaller one.
+//  Call it 90,000 writes a year at fifty sales a day.
+//
+//  That is still not a wear problem, but for the right reason rather than the
+//  one first claimed here: NVS packs many writes into a flash page before it
+//  erases anything, and wear-levels those erases across the partition, so the
+//  flash sees far fewer erase cycles than the firmware does writes. Decades,
+//  comfortably. Redundant writes are skipped in setCredit() by comparing
+//  against a shadow of what is actually stored — Preferences does not do that
+//  for you.
 const bool REMEMBER_CREDIT_ACROSS_POWER_LOSS = true;
 
 // ===========================================================================
@@ -856,7 +864,10 @@ volatile uint32_t isrBurstStartMs = 0;
 // acceptor takes money the firmware cannot count.
 bool coinIsrAttached = false;
 
-Preferences prefs; // opened once in setup(), holds only the meter balance
+Preferences prefs;   // opened once in setup(), holds only the meter balance
+bool creditPersistOk = false;     // is the balance actually reaching flash?
+bool creditPersistWarned = false; // shout about a failure once, not forever
+uint16_t creditInFlash = 0;       // what we last successfully wrote
 
 uint16_t credit = 0; // shillings on the meter
 uint32_t lastCoinMs = 0;
@@ -1043,13 +1054,59 @@ const uint16_t MAX_CREDIT = 10000;
 //  drift from the live one. There is no way to change credit somewhere else
 //  and forget to persist it, because nothing else assigns to it.
 //
-//  putUShort() compares before it writes, so setting the same value again
-//  costs nothing and does not touch the flash.
+//  TWO THINGS HERE ARE NOT OBVIOUS, AND BOTH WERE WRONG ONCE.
+//
+//  First, Preferences does NOT skip a write when the value is unchanged. It
+//  goes straight to nvs_set_u16() + nvs_commit() every time — checked in the
+//  core source, not assumed. The creditInFlash shadow below is what actually
+//  makes "identical writes are free" true, rather than a hope about somebody
+//  else's implementation.
+//
+//  Second, putUShort() returns 0 when it fails, including when begin() never
+//  succeeded, and ignoring that is exactly the failure this whole feature
+//  exists to prevent: the machine would think a balance was safe, say so, and
+//  lose it at the next power cut with nothing logged.
+//
+//  A failure does NOT stop the machine trading. Refusing sales because flash
+//  is unhappy helps nobody — it just turns a degraded machine into a dead one.
+//  What it does is say so, loudly and once, and keep saying so in status and
+//  in the self-test, so the power-cut protection is never quietly absent.
 void setCredit(uint16_t value)
 {
   credit = value;
-  if (REMEMBER_CREDIT_ACROSS_POWER_LOSS)
-    prefs.putUShort("credit", value);
+  if (!REMEMBER_CREDIT_ACROSS_POWER_LOSS)
+    return;
+
+  // Nothing to write. Only trust this when the last write actually landed,
+  // otherwise a retry of the same value would be skipped forever.
+  if (creditPersistOk && value == creditInFlash)
+    return;
+
+  if (prefs.putUShort("credit", value) != 0)
+  {
+    creditInFlash = value;
+    if (!creditPersistOk)
+    {
+      creditPersistOk = true;
+      creditPersistWarned = false;
+      LOGLN(F("The meter balance is being saved again."));
+    }
+    return;
+  }
+
+  creditPersistOk = false;
+  if (!creditPersistWarned)
+  {
+    creditPersistWarned = true;
+    LOGLN();
+    LOGLN(F("!! THE METER BALANCE IS NOT REACHING FLASH."));
+    LOG(F("!! KSH "));
+    LOG(value);
+    LOGLN(F(" is on the meter in RAM only, and a power cut will"));
+    LOGLN(F("!! lose it — the exact thing this is supposed to prevent."));
+    LOGLN(F("!! The machine keeps trading; stopping would not help anybody."));
+    LOGLN(F("!! Check the NVS partition. Status and  d  both report this."));
+  }
 }
 
 // The only place money is added to the meter. Returns false if it refused.
@@ -2105,9 +2162,17 @@ bool selfTest(bool verbose)
   }
   else
   {
-    LOG(F("  on. Meter balance in flash: KSH "));
+    LOG(F("  store       : "));
+    LOGLN(creditPersistOk ? F("open, writing normally")
+                          : F("NOT WRITING  <- power-cut protection is gone"));
+    LOG(F("  balance in flash: KSH "));
     LOGLN(prefs.getUShort("credit", 0));
     LOGLN(F("  This is the only thing this firmware stores."));
+    if (!creditPersistOk)
+    {
+      LOGLN(F("  The machine still trades, but a power cut now loses whatever"));
+      LOGLN(F("  is on the meter. Check the NVS partition."));
+    }
   }
 
   // --- 9. Buzzer ---
@@ -2235,6 +2300,11 @@ void printStatus()
   LOG(credit);
   LOG(F(" of KSH "));
   LOGLN(PAD_PRICE);
+  LOG(F("  balance saved: "));
+  if (!REMEMBER_CREDIT_ACROSS_POWER_LOSS)
+    LOGLN(F("off (SECTION 3)"));
+  else
+    LOGLN(creditPersistOk ? F("yes") : F("NO — a power cut will lose it"));
   LOG(F("  part payment : "));
   if (CREDIT_TIMEOUT_MS == 0)
     LOGLN(F("waits forever, never cleared"));
@@ -2731,7 +2801,14 @@ void setup()
   buzzerInit();
 
   // The meter balance is the only thing this firmware keeps in flash.
-  prefs.begin("padvend", false);
+  creditPersistOk = prefs.begin("padvend", false);
+  if (!creditPersistOk)
+  {
+    LOGLN(F("!! The credit store would not open. The meter balance cannot be"));
+    LOGLN(F("!! saved, so a power cut will lose whatever is on it. The machine"));
+    LOGLN(F("!! still trades — see SECTION 3."));
+    creditPersistWarned = true;
+  }
 
   Wire.begin(PIN_SDA, PIN_SCL);
   // 100 kHz, stated rather than inherited. This is the slowest standard I2C
@@ -2772,6 +2849,7 @@ void setup()
   if (REMEMBER_CREDIT_ACROSS_POWER_LOSS)
   {
     uint16_t saved = prefs.getUShort("credit", 0);
+    creditInFlash = saved; // seed the shadow so we do not rewrite what is there
     if (saved > 0)
     {
       credit = saved; // not setCredit(): the stored value is already this
