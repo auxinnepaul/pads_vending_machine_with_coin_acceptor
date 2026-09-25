@@ -1095,6 +1095,25 @@ void setCredit(uint16_t value)
   }
 
   creditPersistOk = false;
+
+  // A STORED BALANCE WE CAN NO LONGER KEEP IN STEP IS WORSE THAN NONE.
+  //
+  //  Whatever is in flash is now stale, and the next boot would treat it as
+  //  gospel. If it happens to hold a full pad's worth, the machine wakes up,
+  //  believes it owes a pad, and vends one into an empty washroom where it is
+  //  simply lost. If it holds part payment, it hands a discount to whoever
+  //  walks up next. Neither of those helps the customer whose money this
+  //  actually was — she has lost it either way the moment the write failed.
+  //
+  //  So try to clear it. If that write fails too, nothing is lost that was not
+  //  already lost. If it lands, the landmine is gone.
+  if (creditInFlash != 0 && prefs.putUShort("credit", 0) != 0)
+  {
+    creditInFlash = 0;
+    LOGLN(F("!! Stored balance cleared, so a reset cannot restore a stale one"));
+    LOGLN(F("!! and vend a pad nobody paid for."));
+  }
+
   if (!creditPersistWarned)
   {
     creditPersistWarned = true;

@@ -694,6 +694,22 @@ protection is never quietly absent:
 balance saved: NO — a power cut will lose it
 ```
 
+**It also tries to clear whatever is already stored**, and that matters more
+than it sounds. A balance the firmware can no longer keep in step is worse than
+no balance at all: the next boot would treat it as gospel. If it happened to
+hold a full pad's worth, the machine would wake up believing it owed a pad and
+vend one into an empty washroom, where it is simply lost. If it held part
+payment, it would hand a discount to whoever walked up next.
+
+Neither of those helps the customer whose money it actually was — she lost it
+the moment the write failed. So the stale value is cleared if it can be. If
+that write fails too, nothing is lost that was not already lost.
+
+**What remains, stated plainly:** with writes failing, a power cut loses
+whatever is on the meter. The machine trades on and tells you. Fixing the NVS
+partition is the cure; there is no firmware answer to flash that will not
+accept data.
+
 **What it does not fix.** It restores the *claim*, not the cash. Nothing can
 return the coin. And there is a window of a few milliseconds between a pad
 being delivered and the new balance reaching flash — a cut in exactly that gap
