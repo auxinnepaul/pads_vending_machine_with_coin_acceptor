@@ -1096,22 +1096,39 @@ void setCredit(uint16_t value)
 
   creditPersistOk = false;
 
-  // A STORED BALANCE WE CAN NO LONGER KEEP IN STEP IS WORSE THAN NONE.
+  // NEVER LEAVE THE STORED BALANCE ABOVE THE REAL ONE.
   //
-  //  Whatever is in flash is now stale, and the next boot would treat it as
-  //  gospel. If it happens to hold a full pad's worth, the machine wakes up,
-  //  believes it owes a pad, and vends one into an empty washroom where it is
-  //  simply lost. If it holds part payment, it hands a discount to whoever
-  //  walks up next. Neither of those helps the customer whose money this
-  //  actually was — she has lost it either way the moment the write failed.
+  //  The two directions of error are not equally bad, and that asymmetry is
+  //  the whole rule:
   //
-  //  So try to clear it. If that write fails too, nothing is lost that was not
-  //  already lost. If it lands, the landmine is gone.
-  if (creditInFlash != 0 && prefs.putUShort("credit", 0) != 0)
+  //    stored ABOVE the truth  the next boot over-credits. If it holds a full
+  //                            pad's worth the machine wakes up, believes it
+  //                            owes a pad, and vends one into an empty
+  //                            washroom where it is simply lost. Part payment
+  //                            hands a discount to whoever walks up next.
+  //                            DANGEROUS.
+  //
+  //    stored BELOW the truth  the next boot under-credits. The customer
+  //                            recovers part of her claim instead of all of
+  //                            it, which is worse for her than a working
+  //                            machine but better than nothing, and it can
+  //                            never produce a pad nobody paid for. SAFE.
+  //
+  //  So a stored value already at or below the meter is left exactly where it
+  //  is. Clearing it would destroy a claim that was saved successfully,
+  //  earlier, for no safety benefit at all — somebody who put in KSh 10, had
+  //  it stored, then added a second KSh 10 whose write failed would lose BOTH
+  //  coins instead of keeping the one that was safe.
+  //
+  //  Only an overstated balance is worth writing over, and zero is the safest
+  //  thing to put there. If that write fails too, nothing is lost that was not
+  //  already lost.
+  if (creditInFlash > value && prefs.putUShort("credit", 0) != 0)
   {
     creditInFlash = 0;
-    LOGLN(F("!! Stored balance cleared, so a reset cannot restore a stale one"));
-    LOGLN(F("!! and vend a pad nobody paid for."));
+    LOGLN(F("!! The stored balance was higher than the meter, so it has been"));
+    LOGLN(F("!! cleared — a reset must not restore it and vend a pad nobody"));
+    LOGLN(F("!! paid for. A stored balance BELOW the meter is left alone."));
   }
 
   if (!creditPersistWarned)

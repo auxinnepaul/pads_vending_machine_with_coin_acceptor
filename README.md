@@ -694,16 +694,23 @@ protection is never quietly absent:
 balance saved: NO — a power cut will lose it
 ```
 
-**It also tries to clear whatever is already stored**, and that matters more
-than it sounds. A balance the firmware can no longer keep in step is worse than
-no balance at all: the next boot would treat it as gospel. If it happened to
-hold a full pad's worth, the machine would wake up believing it owed a pad and
-vend one into an empty washroom, where it is simply lost. If it held part
-payment, it would hand a discount to whoever walked up next.
+**It also clears the stored balance, but only if that balance is too HIGH.**
+The two directions of error are not equally bad, and the whole rule comes from
+that asymmetry:
 
-Neither of those helps the customer whose money it actually was — she lost it
-the moment the write failed. So the stale value is cleared if it can be. If
-that write fails too, nothing is lost that was not already lost.
+| Stored value | On the next boot | Verdict |
+|---|---|---|
+| **Above** the meter | over-credits — a full pad's worth makes the machine wake up, believe it owes a pad, and vend one into an empty washroom; part payment hands a discount to whoever walks up next | **dangerous** |
+| **Below** the meter | under-credits — she recovers part of her claim instead of all of it. Worse than a working machine, better than nothing, and it can never produce a pad nobody paid for | **safe** |
+
+So a stored value already at or below the meter is **left exactly where it
+is.** Clearing it would destroy a claim that was saved successfully, earlier,
+for no safety benefit — somebody who put in KSh 10, had it stored, then added a
+second KSh 10 whose write failed would lose **both** coins instead of keeping
+the one that was safe.
+
+Only an overstated balance is written over. If that write fails too, nothing is
+lost that was not already lost.
 
 **What remains, stated plainly:** with writes failing, a power cut loses
 whatever is on the meter. The machine trades on and tells you. Fixing the NVS
