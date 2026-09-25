@@ -219,7 +219,7 @@ bool logOn = true;     // momentary gate, see above
 //    6 - 11            wired to the flash chip. Touching them bricks the run.
 //    34 - 39           INPUT ONLY, and with NO internal pull-up. Fine for an
 //                      analogue sensor, useless for a switch to GND — which is
-//                      why the stock switch is on 33 and not 34.
+//                      why the stock switch is not up there.
 //
 //  Everything below is outside all of that. If you move a pin, check it
 //  against this list first.
@@ -234,19 +234,13 @@ const uint8_t PIN_IR = 27;
 const uint8_t PIN_BUZZER = 25;
 const uint8_t PIN_SDA = 21;
 const uint8_t PIN_SCL = 22;
-// Moved off GPIO 19 after it would not drive the inhibit relay reliably on
-// the bench. 19 is a plain GPIO on paper — no strapping, no flash, not an ADC
-// pin — so on the datasheet it should have worked. It did not, and measured
-// behaviour beats a datasheet.
-//
-// 13 is the right replacement: no strapping function, no flash, nothing else
-// on it. NOT 12, which is tempting and is a trap — GPIO 12 is MTDI, and the
-// chip reads it at boot to choose the flash regulator voltage. A relay module
-// with any pull-up on its input will hold 12 high at reset, the ESP32 will set
-// the flash rail to 1.8 V, and the board will stop booting.
-const uint8_t PIN_INHIBIT = 13; // relay 2 -> HX-916 2-pin inhibit port
+const uint8_t PIN_INHIBIT = 19; // relay 2 -> HX-916 2-pin inhibit port
 const uint8_t PIN_CLEAR = 23;   // jam-clear button to GND (INPUT_PULLUP)
-const uint8_t PIN_PADS = 33;    // stock limit switch to GND (INPUT_PULLUP)
+// On 13 rather than 33 purely because 13 lands next to the terminal block on
+// this build. Both are equally valid: plain GPIOs, no strapping, no flash, and
+// both have the internal pull-up a switch-to-ground needs. 13 is ADC2, which
+// does not matter here because this pin is only ever read digitally.
+const uint8_t PIN_PADS = 13;    // stock limit switch to GND (INPUT_PULLUP)
 
 // ===========================================================================
 //  SECTION 2 — THE COIN TABLE.  WHAT EACH COIN IS WORTH.
