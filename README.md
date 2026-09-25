@@ -491,6 +491,31 @@ ADD KSH 10 MORE
 Try either live with `w<ms>`; `w0` is forever. Shorten it to something like
 `w15000` to watch the countdown without standing there for two minutes.
 
+### Change from a vend lands on the same screen
+
+`KEEP_CHANGE_AS_CREDIT` means overpayment stays on the meter, so there are two
+different routes to having part payment:
+
+- she paid **part** of the price and stopped, or
+- she **overpaid**, a pad came out, and the remainder was handed back onto the
+  meter.
+
+KSh 5 on the meter, she inserts KSh 20 → total 25 → a pad is dispensed → KSh 5
+change → straight back to asking for the rest:
+
+```
+CREDIT KSH 5
+ADD 15 IN 1:55
+```
+
+**Both routes land on exactly the same screen**, because one function draws it.
+A customer with KSh 5 showing needs to be told to add 15 and how long she has,
+and that must not depend on how she got there.
+
+KSh 40 into a KSh 20 machine vends two pads back to back for the same reason —
+after the first, credit is still 20, so the machine vends again before it goes
+back to idle.
+
 **The honest trade-off.** There is no refund path — the coin banks into the
 housing before the firmware hears a pulse — so no value here gets the money
 back to the person who paid it. All this number decides is who ends up with it:

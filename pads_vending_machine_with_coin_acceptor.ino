@@ -1341,14 +1341,38 @@ void enterFault(const char *line2)
   LOGLN(F("*** front-panel button for 1 s, or type  x."));
 }
 
+// The idle screen, in its two forms. One function owns both so they cannot
+// drift apart.
+//
+//  Nothing on the meter:       PAD = KSH 20
+//                              INSERT COIN
+//
+//  Part payment outstanding:   CREDIT KSH 5
+//                              ADD 15 IN 1:55
+//
+//  The second form matters more than it looks. Leftover change is reached by
+//  two quite different routes — she paid part of the price, or she overpaid
+//  and a vend handed the remainder back onto the meter — and both must land on
+//  the SAME screen. A customer with KSh 5 showing needs to be told to add 15
+//  and how long she has, and it cannot depend on which way she got there.
+//
+//  Before this, the change-after-a-vend route showed "PAD = KSH 20 / CREDIT
+//  KSH 5" for a second until the countdown tick overwrote line 2, leaving a
+//  half-updated screen that never said what to do.
 void showIdle()
 {
   char l1[17], l2[17];
-  snprintf(l1, sizeof(l1), "PAD = KSH %u", PAD_PRICE);
-  if (credit > 0)
-    snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+  if (credit > 0 && credit < PAD_PRICE)
+  {
+    snprintf(l1, sizeof(l1), "CREDIT KSH %u", credit);
+    creditPromptLine(l2, sizeof(l2), millis());
+    creditTickMs = millis() + 1000; // next countdown repaint is a second away
+  }
   else
+  {
+    snprintf(l1, sizeof(l1), "PAD = KSH %u", PAD_PRICE);
     snprintf(l2, sizeof(l2), "INSERT COIN");
+  }
   say(l1, l2);
 }
 
@@ -2796,20 +2820,19 @@ void loop()
         beep(TONE_REJECT_HZ, TONE_REJECT_MS);
       reportCoin(cb.pulses, coin, &cb);
 
-      char l1[17], l2[17];
       if (state == ST_DISPENSING)
       {
+        char l2[17];
         snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
         say("PLEASE WAIT", l2);
       }
       else if (state == ST_IDLE && credit < PAD_PRICE)
       {
-        snprintf(l1, sizeof(l1), "CREDIT KSH %u", credit);
-        creditPromptLine(l2, sizeof(l2), now);
-        say(l1, l2);
-        creditTickMs = now + 1000; // countdown continues from here
+        showIdle(); // same screen as change left over from a vend
       }
       // DELIVERED is left alone on purpose: "TAKE YOUR PAD" must stay up.
+      // IDLE with credit >= PAD_PRICE is left alone too: a vend starts on the
+      // very next pass and paints DISPENSING over it.
     }
   }
 
@@ -2943,7 +2966,14 @@ void loop()
       // be wrong in a window of milliseconds, err toward the customer.
 
       vendCount++;
-      say("TAKE YOUR PAD", credit > 0 ? "CREDIT REMAINS" : "");
+      // If there is change, name the amount rather than just saying some
+      // exists. She is about to be asked to add to it.
+      char l2[17];
+      if (credit > 0)
+        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+      else
+        l2[0] = 0;
+      say("TAKE YOUR PAD", l2);
       beep(TONE_VEND_HZ, TONE_VEND_MS);
       messageUntilMs = millis() + MESSAGE_HOLD_MS;
       state = ST_DELIVERED;
