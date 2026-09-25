@@ -253,6 +253,32 @@ Shared wire is shared voltage drop. Daisy-chained, the acceptor's surge appears
 directly across the LCD's supply pins. Star-wired, it is mostly confined to the
 acceptor's own pair.
 
+### The backlight sleeps, and waking is a rebuild
+
+After `BACKLIGHT_TIMEOUT_MS` (2 minutes) of a genuinely idle machine, the
+backlight goes out. The **first coin pulse** brings it back — not the finished
+coin. A 40-pulse KSh 40 takes seconds to complete, and she is looking at the
+screen from the moment the coin drops.
+
+**Waking is always a full rebuild, never just switching the light on.** That is
+what makes the sleep worth having beyond saving the backlight: whatever
+happened to the display while nobody was watching is gone before the first
+person sees it. The screen is at its freshest at the exact moment somebody
+starts using it.
+
+Only **plain idle** sleeps. `OUT OF ORDER` and `SORRY - NO PADS` stay lit —
+that message is the whole reason the screen is there. A machine with credit on
+the meter stays lit too, because somebody is mid-transaction. Any console
+command wakes it, so a service visit is never looking at a dark screen.
+
+The periodic rebuild is skipped while asleep, since waking rebuilds anyway.
+
+`BACKLIGHT_TIMEOUT_MS = 0` keeps it on permanently.
+
+*This is also the groundwork for the battery build. The backlight is nearly all
+of what the display consumes — roughly 20 mA against 2 mA for the logic — and
+the client study is explicit that it has to sleep when the machine sleeps.*
+
 ### And at the display itself
 
 **100 µF electrolytic + 100 nF ceramic across the LCD backpack's VCC and GND

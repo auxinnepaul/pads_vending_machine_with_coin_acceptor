@@ -705,6 +705,26 @@ const bool HALT_ON_SELFTEST_FAIL = true;
 //  Set to 0 to disable.
 const uint32_t LCD_REFRESH_MS = 60000;
 
+// How long the machine sits untouched before the backlight goes out.
+//
+//  The backlight is nearly all of what this display consumes — roughly 20 mA
+//  against 2 mA for the logic — and it is the only part of the LCD that wears.
+//  A washroom machine is idle almost all of the time, so leaving it lit buys
+//  nothing and costs the backlight's life.
+//
+//  It is also the cleanest possible refresh. Waking ALWAYS rebuilds the
+//  display from scratch, and waking happens on the first coin pulse — so the
+//  screen is at its freshest at the exact moment somebody starts using it.
+//  Corruption that happened while nobody was looking never gets seen.
+//
+//  Only plain idle sleeps. A machine showing OUT OF ORDER or SORRY - NO PADS
+//  stays lit, because that message is the whole point of it being there, and
+//  a machine with credit on the meter stays lit because somebody is mid-
+//  transaction.
+//
+//  Set to 0 to keep the backlight on always.
+const uint32_t BACKLIGHT_TIMEOUT_MS = 120000; // 2 minutes
+
 // ###########################################################################
 // #                 END OF CONFIG.  Below here is machinery.                #
 // ###########################################################################
@@ -812,7 +832,10 @@ bool lcdOk = false; // false = run headless, console only
 //  This is a belt-and-braces measure, not a substitute for fixing the supply.
 //  See README, "Funny symbols on the screen".
 bool lcdNeedsReinit = false;
-uint32_t lcdRefreshMs = 0; // next scheduled rebuild, see LCD_REFRESH_MS
+uint32_t lcdRefreshMs = 0;    // next scheduled rebuild, see LCD_REFRESH_MS
+bool backlightOn = true;      // false = asleep, see BACKLIGHT_TIMEOUT_MS
+uint32_t lastActivityMs = 0;  // last coin pulse or console command
+uint32_t lastPulseTotal = 0;  // to spot a pulse the moment it arrives
 
 // Coin pulses are counted in an ISR and decoded into whole coins in loop().
 volatile uint16_t isrBurst = 0;
@@ -893,6 +916,8 @@ bool selfTest(bool verbose);
 void attachCoinIsr();
 static bool vendInFlight();
 void repaintForState();
+void wakeDisplay();
+void sleepDisplay();
 
 // Debounced pad stock switch
 bool padsRaw = true;
@@ -1432,6 +1457,30 @@ void repaintForState()
   emptyRotateMs = 0;
   if (state == ST_IDLE)
     showIdle();
+}
+
+// Wake the display, rebuilding it on the way up.
+//
+//  Waking is always a full rebuild, never just switching the light back on.
+//  That is deliberate and it is what makes the sleep worth having: whatever
+//  happened to the screen while nobody was watching — a spike, a dropped
+//  nibble, anything — is gone before the first person sees it.
+void wakeDisplay()
+{
+  lastActivityMs = millis();
+  if (!lcdOk || backlightOn)
+    return;
+  backlightOn = true;
+  lcdNeedsReinit = true; // say() does lcd.init() + lcd.backlight() for us
+  repaintForState();
+}
+
+void sleepDisplay()
+{
+  if (!lcdOk || !backlightOn)
+    return;
+  backlightOn = false;
+  lcd.noBacklight();
 }
 
 // Out of stock is NOT a fault. It is a normal condition with an obvious cure,
@@ -2205,7 +2254,12 @@ void printStatus()
   else
     LOGLN(padsPresent() ? F("PADS PRESENT") : F("EMPTY"));
   LOG(F("  screen       : "));
-  LOGLN(lcdOk ? F("ok") : F("MISSING — headless"));
+  if (!lcdOk)
+    LOGLN(F("MISSING — headless"));
+  else if (backlightOn)
+    LOGLN(F("ok, lit"));
+  else
+    LOGLN(F("ok, backlight asleep"));
   LOGLN();
   LOG(F("  vends        : "));
   LOGLN(vendCount);
@@ -2332,6 +2386,9 @@ void handleCommand(char *s)
 {
   char c = s[0];
   long n = (strlen(s) > 1) ? atol(s + 1) : -1;
+
+  // Somebody is standing at the machine with a laptop, so wake the screen.
+  wakeDisplay();
 
   // A typed command always gets an answer, even on a machine installed with
   // event logging off. Put back to the configured level on the way out.
@@ -2737,6 +2794,9 @@ void setup()
     }
   }
 
+  lastActivityMs = millis(); // start the backlight clock from boot
+  lastPulseTotal = isrTotal;
+
   attachCoinIsr();
 
   if (!padsPresent())
@@ -2795,6 +2855,26 @@ void loop()
   buzzerService();
   pollSerial();
   clearButtonService();
+
+  // ---- Wake on the FIRST pulse, not on the finished coin ----
+  //
+  //  takeCoin() does not hand a coin over until the acceptor has been quiet
+  //  for COIN_GAP_MS, and on a 40-pulse coin that is seconds away. Watching
+  //  the raw pulse counter instead lights the screen the instant her coin
+  //  registers, which is when she is looking at it.
+  uint32_t pulsesNow = isrTotal;
+  if (pulsesNow != lastPulseTotal)
+  {
+    lastPulseTotal = pulsesNow;
+    wakeDisplay();
+  }
+
+  // ---- Sleep only when there is genuinely nothing to show ----
+  if (BACKLIGHT_TIMEOUT_MS > 0 && backlightOn && state == ST_IDLE &&
+      credit == 0 && (now - lastActivityMs) > BACKLIGHT_TIMEOUT_MS)
+  {
+    sleepDisplay();
+  }
 
   // ---- Backstop. Checked in every state, before anything else can run. ----
   // Nothing below this line is trusted to stop the motor on its own.
@@ -3196,7 +3276,9 @@ void loop()
   //  screen, and whether or not we know what it was, it cannot survive longer
   //  than this. Skipped mid-vend: the beam matters more than the screen, and
   //  a vend is over in seconds anyway.
-  if (LCD_REFRESH_MS > 0 && lcdOk && !vendInFlight() &&
+  //  Skipped while asleep: waking rebuilds the display anyway, so refreshing a
+  //  dark screen would be work nobody benefits from.
+  if (LCD_REFRESH_MS > 0 && lcdOk && backlightOn && !vendInFlight() &&
       reached(now, lcdRefreshMs))
   {
     lcdRefreshMs = now + LCD_REFRESH_MS;
