@@ -699,32 +699,37 @@ const bool HALT_ON_SELFTEST_FAIL = true;
 //  The machine is always in exactly one of five states, and the state decides
 //  two things: what is on the screen, and whether the coin acceptor is live.
 //
-//    ST_IDLE        Waiting for money. THE ONLY STATE THAT ACCEPTS COINS.
-//                   Leaves here when credit reaches the price, or when the
-//                   stock switch says the coil is empty.
+//    ST_IDLE        Waiting for money. Coins accepted. Leaves here when
+//                   credit reaches the price, or when the stock switch says
+//                   the coil is empty.
 //
-//    ST_DISPENSING  Motor turning, watching the beam. Coins inhibited. Ends
+//    ST_DISPENSING  Motor turning, watching the beam. COINS STILL ACCEPTED —
+//                   one that lands here is banked and buys the next pad. Ends
 //                   when a pad breaks the beam (-> DELIVERED) or when
 //                   DISPENSE_TIMEOUT_MS runs out (-> EMPTY or FAULT).
 //
 //    ST_DELIVERED   Pad fell. "TAKE YOUR PAD" holds for MESSAGE_HOLD_MS, then
-//                   back to IDLE. Coins stay inhibited through the hold so a
-//                   coin cannot arrive against a screen that is not ready.
+//                   back to IDLE. Coins still accepted, for the same reason.
 //
-//    ST_EMPTY       Stock switch says no pads. Coins inhibited. NOT a fault
+//    ST_EMPTY       Stock switch says no pads. COINS INHIBITED. NOT a fault
 //                   and NOT latched: it returns to IDLE on its own the moment
 //                   the switch says pads are back, so a refill is all it takes
 //                   and nobody has to drive out with a key.
 //
 //    ST_FAULT       Something is wrong that needs a person: a jam, a sensor
-//                   reading wrong, or a failed self-test. Coins inhibited.
+//                   reading wrong, or a failed self-test. COINS INHIBITED.
 //                   LATCHED — it stays here until the clear button is held for
 //                   CLEAR_BTN_HOLD_MS or  x  is typed, and even then it
 //                   refuses while the beam still reads blocked.
 //
-//  The rule the whole design rests on: EVERY state except ST_IDLE inhibits the
-//  coin acceptor. The machine would rather refuse a sale than take money for a
-//  pad it cannot promise to deliver.
+//  THE RULE THE WHOLE DESIGN RESTS ON: the coin slot is live in every state
+//  EXCEPT EMPTY and FAULT — the two where the machine cannot honour a coin. It
+//  is derived from the state in one line of loop() and written nowhere else,
+//  so the slot can never disagree with what the machine is doing.
+//
+//  It stays open during a vend on purpose. A coin landing mid-vend is banked
+//  and buys the next pad, so there is nothing to protect against, and closing
+//  the slot for every sale would work the relay twice per vend for no benefit.
 //
 enum State
 {
@@ -1374,6 +1379,25 @@ void showIdle()
     snprintf(l2, sizeof(l2), "INSERT COIN");
   }
   say(l1, l2);
+}
+
+// Put the screen back to whatever the machine actually IS.
+//
+//  Any console command that takes the display over has to end with this rather
+//  than calling showIdle(). showIdle() draws the idle screen unconditionally,
+//  so on an out-of-stock or faulted machine it paints INSERT COIN over SORRY -
+//  NO PADS or OUT OF ORDER — inviting a coin that the inhibited slot will not
+//  take — and leaves it there until the next rotation tick up to two seconds
+//  later.
+//
+//  Zeroing the two rotation deadlines makes those screens repaint immediately
+//  instead of waiting for their turn.
+void repaintForState()
+{
+  faultRotateMs = 0;
+  emptyRotateMs = 0;
+  if (state == ST_IDLE)
+    showIdle();
 }
 
 // Out of stock is NOT a fault. It is a normal condition with an obvious cure,
@@ -2214,7 +2238,9 @@ void runMotorFor(uint32_t ms)
     LOGLN(F("  beam never broke during the run"));
   LOGLN(F("Time one full revolution this way, then set"));
   LOGLN(F("DISPENSE_TIMEOUT_MS to about double it  (o<ms>)."));
-  showIdle();
+  // Not showIdle(): this command is deliberately allowed while EMPTY, and the
+  // machine is still out of stock with the slot inhibited when it finishes.
+  repaintForState();
 }
 
 // Returns false if it refused to start. The caller must not take the money
@@ -2318,13 +2344,7 @@ void handleCommand(char *s)
       break;
     }
     selfTestPassed = selfTest(true);
-    // Put the screen back to whatever the machine actually is. showIdle() on
-    // its own used to paint INSERT COIN over a faulted or empty machine and
-    // leave it there until the next rotation tick.
-    faultRotateMs = 0;
-    emptyRotateMs = 0;
-    if (state == ST_IDLE)
-      showIdle();
+    repaintForState();
     break;
   case 'b':
     LOGLN(F("Chirp."));
@@ -2350,10 +2370,7 @@ void handleCommand(char *s)
     lcdNeedsReinit = true; // force a full rebuild, that is the point of  l
     say("0123456789ABCDEF", "BRICAPA  v" FW_VERSION);
     holdFor(2000);
-    faultRotateMs = 0;
-    emptyRotateMs = 0;
-    if (state == ST_IDLE)
-      showIdle();
+    repaintForState();
     break;
 
   case 'L':
