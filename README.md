@@ -882,11 +882,37 @@ HOLD BUTTON 1 SEC
 ```
 
 Three attempts. A jam that survives three tries is not going to clear itself,
-and carrying on just works the coil against whatever is stuck — at that point
-it really is a staff problem and the screen changes to `SORRY - JAMMED / GET
-HELP`. The console `x` still clears it and forgives the count, because anyone
-with a console has presumably just looked inside. Any successful delivery
-resets the budget.
+and carrying on just works the coil against whatever is stuck. At that point it
+really is a staff problem, and the screen stops telling her to try and starts
+telling her **who to call**:
+
+```
+SORRY - JAMMED
+CALL No. ON BOX      ← SERVICE_CONTACT, SECTION 4
+```
+
+Put the real number that is printed on the machine into `SERVICE_CONTACT`.
+`GET HELP` without saying who to get is no help at all. Sixteen characters
+maximum — the self-test measures it and warns you if it would be cut off, and
+nags if there is no digit in it.
+
+The console `x` still clears it and forgives the count, because anyone with a
+console has presumably just looked inside. Any successful delivery resets the
+budget.
+
+### A refill puts a latched jam back to work by itself
+
+Nothing the machine can sense tells it a jam has been **fixed** — the beam was
+already clear while it was jammed, so that proves nothing.
+
+But emptying and refilling the coil is something only a person with the door
+open can do, and it is exactly what fixing a jam involves. So the **stock
+switch going away and coming back** is treated as a service visit: the machine
+clears the fault, restores the retry budget, and goes back to work on its own.
+
+Without that, a jam that ran out its three retries stays dead until somebody
+thinks to plug in a laptop — which is not a reasonable thing to need after a
+refill.
 
 With **nothing owed**, the same fault shows `OUT OF ORDER` instead, because
 then it is not a customer's problem to solve.

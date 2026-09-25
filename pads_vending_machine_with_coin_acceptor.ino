@@ -415,6 +415,15 @@ const bool PAD_SWITCH_FITTED = true;
 //  Reset by any successful delivery.
 const uint8_t MAX_BUTTON_RETRIES = 3;
 
+// What the screen tells her once the retries are gone and it really does need
+// a person. Put the actual number that is printed on the machine here — a
+// screen that says GET HELP without saying who to get is no help at all.
+//
+// SIXTEEN CHARACTERS MAXIMUM. The display is 16 x 2 and anything longer is
+// silently cut off, which is worse than a short message.
+//                                 |<-- 16 chars max -->|
+const char *SERVICE_CONTACT      = "CALL No. ON BOX";
+
 // --- JAM-CLEAR BUTTON ------------------------------------------------------
 // Momentary NO button between PIN_CLEAR and GND. Mount it INSIDE the locked
 // door — it is an attendant control, not a customer control.
@@ -1005,7 +1014,8 @@ bool clearBtnStable = false;
 uint32_t clearBtnChangedMs = 0;
 uint32_t clearBtnDownMs = 0;
 bool clearBtnHandled = false;
-uint8_t buttonRetries = 0; // consecutive button clears with no pad delivered
+uint8_t buttonRetries = 0;     // consecutive button clears with no pad delivered
+bool serviceCycleSeen = false; // stock switch went EMPTY during a fault
 char faultLine2[17] = "";
 uint8_t faultMsgIdx = 0;
 uint32_t faultRotateMs = 0;
@@ -1804,7 +1814,7 @@ void attemptClear(const char *who, bool fromButton)
   // another attempt. The console keeps working, because that is staff.
   if (fromButton && buttonRetries >= MAX_BUTTON_RETRIES)
   {
-    say("SORRY - JAMMED", "GET HELP");
+    say("SORRY - JAMMED", SERVICE_CONTACT);
     beep(TONE_REJECT_HZ, TONE_REJECT_MS);
     LOG(F("Refusing: "));
     LOG(buttonRetries);
@@ -2431,6 +2441,22 @@ bool selfTest(bool verbose)
   }
 
   // --- 9. Buzzer ---
+  LOG(F("  service msg : \""));
+  LOG(SERVICE_CONTACT);
+  LOG(F("\"  ("));
+  LOG(strlen(SERVICE_CONTACT));
+  LOGLN(F(" chars)"));
+  if (strlen(SERVICE_CONTACT) > 16)
+  {
+    LOGLN(F("  !! Longer than the 16-character display. It will be cut off."));
+    LOGLN(F("  !! Shorten SERVICE_CONTACT in SECTION 4."));
+  }
+  else if (strstr(SERVICE_CONTACT, "0") == NULL)
+  {
+    LOGLN(F("  Note: no digits in it. Put the real number printed on the"));
+    LOGLN(F("  machine here — GET HELP without saying who to get is no help."));
+  }
+
   LOGLN(F("[9] BUZZER"));
   LOGLN(F("  One short chirp now. Silence means check GPIO 25."));
   beep(TONE_COIN_HZ, TONE_COIN_MS);
@@ -3403,6 +3429,39 @@ void loop()
     showIdle();
   }
 
+  //  A LATCHED JAM CLEARS ITSELF WHEN SOMEBODY HAS CLEARLY BEEN INSIDE.
+  //
+  //  Nothing the machine can sense tells it a jam has been fixed — the beam
+  //  was already clear while it was jammed, so that proves nothing. But
+  //  emptying and refilling the coil is something only a person with the door
+  //  open can do, and it is exactly what fixing a jam involves. So the stock
+  //  switch going away and coming back is treated as a service visit, and the
+  //  machine tries to go back to work on its own.
+  //
+  //  Without this a jam that ran out its three retries stays dead until
+  //  somebody thinks to plug in a laptop, which is not a reasonable thing to
+  //  need after a refill.
+  if (state == ST_FAULT)
+  {
+    if (!stocked)
+    {
+      serviceCycleSeen = true;
+    }
+    else if (serviceCycleSeen)
+    {
+      serviceCycleSeen = false;
+      LOGLN();
+      LOGLN(F("Stock cycled away and back while faulted — somebody has been"));
+      LOGLN(F("inside. Treating it as a service visit and returning to work."));
+      buttonRetries = 0; // whoever refilled it earned a fresh budget
+      attemptClear("a refill", false);
+    }
+  }
+  else
+  {
+    serviceCycleSeen = false;
+  }
+
   // ---- Live stock watch, for mounting the switch ----
   if (stockWatch)
   {
@@ -3668,14 +3727,25 @@ void loop()
       //  standing there. With credit on the meter it is a customer who has
       //  paid and has no pad: tell her to hold the button, not that the
       //  machine is out of order. With nothing owed it really is out of order.
-      if (credit >= PAD_PRICE && buttonRetries < MAX_BUTTON_RETRIES)
+      //  Three different people can be standing here and they need three
+      //  different things said to them. Every line below is 16 characters or
+      //  fewer, because the display silently cuts off anything longer.
+      if (buttonRetries >= MAX_BUTTON_RETRIES)
       {
-        say("PAID - NO PAD YET",
-            faultMsgIdx == 0 ? "HOLD BUTTON 1 SEC" : "TO TRY AGAIN");
+        // Out of retries. She cannot fix this, so stop telling her to try and
+        // tell her who can.
+        say("SORRY - JAMMED", faultMsgIdx == 0 ? "GET HELP" : SERVICE_CONTACT);
+        faultMsgIdx = (faultMsgIdx + 1) % 2;
+      }
+      else if (credit >= PAD_PRICE)
+      {
+        // She has paid and has no pad, and the button will try again for her.
+        say("PAID - NO PAD", faultMsgIdx == 0 ? "HOLD BTN 1 SEC" : "TO TRY AGAIN");
         faultMsgIdx = (faultMsgIdx + 1) % 2;
       }
       else
       {
+        // Nobody is owed anything, so it is simply broken.
         const char *l2;
         switch (faultMsgIdx)
         {
@@ -3686,7 +3756,7 @@ void loop()
           l2 = "NO COINS TAKEN";
           break;
         default:
-          l2 = "NEEDS ATTENTION";
+          l2 = SERVICE_CONTACT;
           break;
         }
         say("OUT OF ORDER", l2);
