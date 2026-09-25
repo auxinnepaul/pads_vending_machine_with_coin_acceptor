@@ -942,6 +942,18 @@ void motorOff()
 //  with no power sits closed — so an unpowered, booting, halted or crashed
 //  controller refuses money instead of eating it. Change INHIBIT_CONTACT_IS_NC
 //  only if you also move the wire.
+//
+//  WHAT THIS CANNOT DO. Inhibit stops the acceptor taking the NEXT coin. It
+//  cannot give back one already taken. The acceptor banks a coin into the cash
+//  box and only then sends its pulses, so by the time this firmware knows any
+//  money arrived, that money is physically in the housing with no path back
+//  out. There is no eject, no return chute and no hopper anywhere in this
+//  machine.
+//
+//  That single fact shapes the whole money design. The firmware cannot refund,
+//  so it must instead never lose track of what it owes: credit is taken off
+//  the meter only when a pad is confirmed delivered, and a full pad's worth of
+//  credit is never quietly timed out. See ST_DISPENSING and ST_EMPTY.
 void coinAcceptorAllow(bool allow)
 {
   bool contactClosed = !allow; // closed == inhibited
@@ -1191,7 +1203,11 @@ void enterEmpty()
   {
     LOG(F("*** KSH "));
     LOG(credit);
-    LOGLN(F(" is still on the meter and will buy a pad on refill."));
+    LOGLN(F(" is still on the meter."));
+    if (credit >= PAD_PRICE)
+      LOGLN(F("*** A full pad, already paid for. It waits here for a refill."));
+    else
+      LOGLN(F("*** That is part payment. It will time out like any other."));
   }
 }
 
@@ -2698,11 +2714,25 @@ void loop()
     // Credit can still be sitting here from someone who paid just as the last
     // pad went. It buys a pad the moment the coil is refilled, or it times out
     // like any other partial payment.
-    if (credit > 0 && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
+    // Same rule as ST_IDLE: only PART payment times out. Credit that is
+    // enough for a whole pad stays put and waits for the refill.
+    //
+    //  The reason is that the coin is already in the cash box. The acceptor
+    //  banks a coin before it sends a single pulse, so by the time this
+    //  firmware knows money arrived, the money is gone into the housing and
+    //  nothing can eject it. Inhibiting the acceptor stops the NEXT coin; it
+    //  cannot undo one already taken.
+    //
+    //  So a full pad's worth of credit is not a number on a screen, it is a
+    //  debt the machine has already been paid for. Wiping it would mean money
+    //  in the box and no pad out of it, which is the exact failure that paying
+    //  on delivery exists to prevent — it would be pointless to fix that at the
+    //  vend and then undo it with a timeout twenty seconds later.
+    if (credit > 0 && credit < PAD_PRICE && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
     {
-      LOG(F("Credit of KSH "));
+      LOG(F("Partial credit of KSH "));
       LOG(credit);
-      LOGLN(F(" timed out while out of stock."));
+      LOGLN(F(" timed out while out of stock, cleared."));
       credit = 0;
     }
     // The screen is the only thing standing between a customer and a locked

@@ -468,21 +468,40 @@ back out on its own when it closes.
 **Nothing comes off the meter until the beam confirms a pad actually fell.**
 The motor starting does not cost anything; only the pad landing does.
 
-This matters because the machine **cannot refund**. There is no hopper and
-nothing to pay out with. So the only way it can be honest about a vend that
-fails is to never have taken the money in the first place. Charge on delivery
-and a jam, an empty coil, a mis-aimed sensor or a missed beam all leave the
-credit sitting on the meter where the customer can still see it — and where it
-buys a pad as soon as the machine is working again.
+### Why it has to work this way
+
+**The coin is in the cash box before the firmware knows it exists.** The
+acceptor banks a coin first and only then sends its pulses. By the time this
+code hears anything, the money has already dropped into the housing and there
+is no eject, no return chute and no hopper anywhere in this machine.
+
+So inhibiting the acceptor stops the **next** coin. It cannot give back one
+already taken, and nothing else can either.
+
+That single fact shapes the whole money design. The firmware cannot refund
+cash, so what it protects instead is **the claim**: the machine's record that
+it owes you a pad. Charging on delivery means a jam, an empty coil, a mis-aimed
+sensor or a missed beam all leave that claim intact on the meter — and it is
+honoured as soon as the machine can serve it.
+
+Be clear about the distinction. Pay-on-delivery does **not** get anybody their
+money back; nothing can. It means the machine does not also forget it owes them
+a pad.
 
 There is exactly one line in the firmware that spends credit, and it runs after
 the beam has confirmed delivery.
 
 Two consequences worth knowing:
 
-- **A failed vend costs nobody anything.** The machine goes to FAULT or EMPTY
+- **A failed vend does not lose the claim.** The machine goes to FAULT or EMPTY
   with the credit intact. If it went to EMPTY, a refill puts it straight back
   in service and that credit buys the pad it was owed.
+- **A full pad's worth of credit never times out.** Part payment is forgotten
+  after `CREDIT_TIMEOUT_MS` so the next customer does not walk up to somebody
+  else's money — but credit that already covers a pad has been paid for, and it
+  sits and waits, in IDLE and in EMPTY alike. Wiping it would put money in the
+  box with no pad out of it, which is the exact failure charging on delivery
+  exists to prevent.
 - **Clearing a fault does wipe the credit**, on purpose. By the time somebody
   unlocks the door the customer is long gone, and carrying it forward would
   just hand the next person a free pad. The console prints the amount it is
