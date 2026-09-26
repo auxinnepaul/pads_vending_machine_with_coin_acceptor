@@ -255,6 +255,45 @@ Two inductive things hang off the 12 V rail: the motor and the acceptor's gate
 solenoid. Both dump a reverse spike when switched off. Left alone that spike
 travels the whole rail, which is what browns out the LCD.
 
+### First work out which noise you have
+
+The firmware counts every induced pulse it throws away and prints the **rate**,
+not just the total. That distinction is the whole diagnosis, because two
+different faults show up here and they need different parts:
+
+| What the console shows | Cause | Cure |
+|---|---|---|
+| A **fixed burst** per run, whatever the run length | the relay coil and the motor's field collapsing as it switches | flyback diode |
+| A **steady rate** that scales with run time | continuous arcing at the brushes | capacitors across the motor |
+
+Measured on this machine over 27.7 s of motor running: **1937 pulses, a steady
+70 per second**, from runs between 1.0 and 5.0 s. That is brush arcing. A
+flyback diode alone will not touch it.
+
+### Capacitors across the motor — for brush noise
+
+A brushed DC motor arcs continuously as the brushes cross the commutator gaps,
+and every arc is a small radio transmitter. The standard suppression network:
+
+```
+              ┌─────── 100 nF ───────┐          ← across the terminals
+              │                      │
+   motor + ───┴──────[ MOTOR ]───────┴─── motor −
+              │                      │
+             100 nF                100 nF       ← each terminal to the case
+              │                      │
+              └──── motor case ──────┘
+```
+
+- **100 nF across the terminals** is the one that matters most. Fit it first.
+- **100 nF from each terminal to the motor case**, if the case is metal and you
+  can get a solder tag or clamp onto it.
+- Use **ceramic** capacitors, and put them **at the motor**, not at the relay.
+  The wire between is the antenna you are trying to silence.
+
+Wiper motors are often sold with this network already fitted inside the
+housing — worth checking before you add your own.
+
 ### The flyback diode across the motor
 
 **Part:** `1N5408` (3 A) is the right default. `1N4007` (1 A) works for a small

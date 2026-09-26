@@ -961,6 +961,7 @@ bool irWatch = false; // console command  i
 // Motor backstop
 bool motorRunning = false;
 uint32_t motorOnSince = 0;
+uint32_t lastMotorRunMs = 0; // how long the last run lasted, for the noise rate
 
 // Counters. RAM only, and reset on every boot. The meter balance is the
 // only thing that survives a power cut — see setCredit().
@@ -1401,6 +1402,7 @@ void motorOn()
 void motorOff()
 {
   digitalWrite(PIN_RELAY, RELAY_ACTIVE_HIGH ? LOW : HIGH);
+  lastMotorRunMs = millis() - motorOnSince;
   motorRunning = false;
   // The coil collapsing as the relay opens is the WORST moment for induced
   // pulses, worse than starting. Keep the line muted well past it.
@@ -3451,13 +3453,41 @@ void loop()
 
     if (junk)
     {
+      noisePulses += junk;
       LOG(F("Discarded "));
       LOG(junk);
-      LOGLN(junk == 1 ? F(" pulse induced by the motor.")
-                      : F(" pulses induced by the motor."));
-      LOGLN(F("  Not coins. Every one of these would have been free credit."));
-      LOGLN(F("  Fit the flyback diode and the capacitors — see README."));
-      noisePulses += junk;
+      LOG(junk == 1 ? F(" pulse induced by the motor over ")
+                    : F(" pulses induced by the motor over "));
+      LOG(lastMotorRunMs);
+      LOGLN(F(" ms of running."));
+
+      //  THE RATE IS THE DIAGNOSIS, not the count. Two quite different faults
+      //  produce noise here and they need different parts:
+      //
+      //    a FIXED burst per run, whatever the run length, is the relay coil
+      //    and the motor's field collapsing as it switches — a flyback diode
+      //    across the motor is the cure;
+      //
+      //    a STEADY RATE that scales with run time is continuous arcing at the
+      //    brushes, and a flyback diode does nothing for it. That wants
+      //    capacitors across the motor terminals.
+      //
+      //  Printing per-second lets the bench tell them apart at a glance.
+      if (lastMotorRunMs > 100)
+      {
+        uint32_t perSec = (junk * 1000UL) / lastMotorRunMs;
+        LOG(F("  That is about "));
+        LOG(perSec);
+        LOGLN(F(" per second of motor run."));
+        if (perSec > 20)
+        {
+          LOGLN(F("  A steady rate like that is brush arcing, not the switching"));
+          LOGLN(F("  spike, so a flyback diode alone will not fix it. Fit"));
+          LOGLN(F("  100 nF across the motor terminals — see README."));
+        }
+      }
+      if (noisePulses == junk)
+        LOGLN(F("  Not coins. Every one would have been free credit."));
     }
   }
 
