@@ -986,6 +986,30 @@ static inline bool reached(uint32_t now, uint32_t deadline)
   return (int32_t)(now - deadline) >= 0;
 }
 
+// Milliseconds since a timestamp, clamped at zero.
+//
+//  THE BUG THIS EXISTS TO KILL, because it cost a whole bench session.
+//
+//  loop() reads `now` once at the top. Anything that stamps a timestamp with
+//  millis() LATER in that same pass produces a value AHEAD of `now`. The
+//  unsigned subtraction (now - stamp) then wraps to about 4.29 billion, and
+//  every "has enough time passed?" test built on it fires instantly.
+//
+//  That is exactly what broke part payment: bankCoin() stamped lastCoinMs with
+//  millis(), the credit timeout compared it against the stale `now`, and a
+//  KSh 5 was cleared on the very pass it was banked. It only showed on 5 and
+//  10 because 20 and 40 meet the price and vend before the timeout is reached.
+//
+//  So: never write (now - stamp) directly. Use sinceMs() to measure, and
+//  reached(now, stamp + interval) to decide — both are correct whether the
+//  stamp is behind, level with, or slightly ahead of `now`, and both survive
+//  the millis() rollover as well.
+static inline uint32_t sinceMs(uint32_t now, uint32_t stamp)
+{
+  int32_t d = (int32_t)(now - stamp);
+  return (d > 0) ? (uint32_t)d : 0;
+}
+
 static inline uint32_t motorHardLimitMs()
 {
   return DISPENSE_TIMEOUT_MS + MOTOR_LIMIT_MARGIN_MS;
@@ -1318,6 +1342,9 @@ bool bankCoin(const CoinDef *coin)
   setCredit(credit + coin->value);
   shillingsIn += coin->value;
   coinsAccepted++;
+  // millis() here is AHEAD of the `now` loop() is holding, because this runs
+  // later in the same pass. Everything that reads lastCoinMs goes through
+  // reached() or sinceMs() for exactly that reason — see sinceMs().
   lastCoinMs = millis();
   return true;
 }
@@ -3438,14 +3465,14 @@ void loop()
 
   // ---- Sleep only when there is genuinely nothing to show ----
   if (BACKLIGHT_TIMEOUT_MS > 0 && backlightOn && state == ST_IDLE &&
-      credit == 0 && (now - lastActivityMs) > BACKLIGHT_TIMEOUT_MS)
+      credit == 0 && reached(now, lastActivityMs + BACKLIGHT_TIMEOUT_MS))
   {
     sleepDisplay();
   }
 
   // ---- Backstop. Checked in every state, before anything else can run. ----
   // Nothing below this line is trusted to stop the motor on its own.
-  if (motorRunning && (now - motorOnSince) > motorHardLimitMs())
+  if (motorRunning && reached(now, motorOnSince + motorHardLimitMs()))
   {
     motorOff();
     LOGLN(F("!! Hard motor limit hit. The state machine did not stop it."));
@@ -3472,7 +3499,7 @@ void loop()
 
   // ---- A pad sitting in the beam while idle is worth saying out loud ----
   if (state == ST_IDLE && irStable && !irStuckWarned &&
-      (now - irBlockedSince) > IR_STUCK_WARN_MS)
+      reached(now, irBlockedSince + IR_STUCK_WARN_MS))
   {
     irStuckWarned = true;
     LOGLN(F("WARN: the chute has read BLOCKED for a while at rest."));
@@ -3648,7 +3675,7 @@ void loop()
       // CREDIT_TIMEOUT_MS of 0 means wait forever, so the clock never runs
       // out. Without this guard a zero would make (now - lastCoinMs) > 0 true
       // almost immediately and wipe the credit on the very next pass.
-      if (CREDIT_TIMEOUT_MS > 0 && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
+      if (CREDIT_TIMEOUT_MS > 0 && reached(now, lastCoinMs + CREDIT_TIMEOUT_MS))
       {
         // Print the MEASURED wait, not the configured one. Printing the
         // setting here made the log useless for telling "she really did take
@@ -3657,7 +3684,7 @@ void loop()
         LOG(F("Part payment of KSH "));
         LOG(credit);
         LOG(F(" cleared after an actual wait of "));
-        LOG((now - lastCoinMs) / 1000);
+        LOG(sinceMs(now, lastCoinMs) / 1000);
         LOG(F(" s (limit "));
         LOG(CREDIT_TIMEOUT_MS / 1000);
         LOGLN(F(" s)."));
@@ -3742,7 +3769,7 @@ void loop()
       }
       rule();
     }
-    else if ((now - dispenseStartMs) > DISPENSE_TIMEOUT_MS)
+    else if (reached(now, dispenseStartMs + DISPENSE_TIMEOUT_MS))
     {
       motorOff();
       LOG(F("No pad in "));
@@ -3810,7 +3837,7 @@ void loop()
     //  on delivery exists to prevent — it would be pointless to fix that at the
     //  vend and then undo it with a timeout twenty seconds later.
     if (CREDIT_TIMEOUT_MS > 0 && credit > 0 && credit < PAD_PRICE &&
-        (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
+        reached(now, lastCoinMs + CREDIT_TIMEOUT_MS))
     {
       LOG(F("Part payment of KSH "));
       LOG(credit);
@@ -3920,7 +3947,7 @@ void loop()
   }
 
   // ---- Heartbeat, for soak tests ----
-  if (heartbeatOn && (now - lastBeatMs) > HEARTBEAT_MS)
+  if (heartbeatOn && reached(now, lastBeatMs + HEARTBEAT_MS))
   {
     lastBeatMs = now;
     LOG(F("[hb] "));
