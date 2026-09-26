@@ -540,8 +540,14 @@ uint32_t COIN_GAP_MS = 250;
 //              the real drop time rather than a guess. Set this to about
 //              DOUBLE the slowest drop you saw. Margin here is cheap; a
 //              phantom fault in a washroom is not.
-//  CONSOLE     o<ms>   e.g.  o3000
-uint32_t DISPENSE_TIMEOUT_MS = 3000;
+//  CONSOLE     o<ms>   e.g.  o5000
+//
+//  MEASURED ON THIS MACHINE: successful drops have taken 775, 980, 1121, 1127,
+//  1209, 1436, 1465, 1510, 1545, 1752, 1819, 1940 and 2299 ms. The slowest is
+//  2299, so 3000 left only 700 ms of margin and was throwing JAMMED faults on
+//  a coil that was working. 5000 is a little over double the slowest observed
+//  drop, which is the rule this file asks for. Re-measure if the motor changes.
+uint32_t DISPENSE_TIMEOUT_MS = 5000;
 
 // ---------------------------------------------------------------------------
 //  CREDIT_TIMEOUT_MS — how long to keep asking for the rest of the money
@@ -937,6 +943,7 @@ uint16_t creditInFlash = 0;       // what we last successfully wrote
 
 uint16_t credit = 0; // shillings on the meter
 uint32_t lastCoinMs = 0;
+uint32_t prevCoinMs = 0; // the one before it, so the gap can be reported
 uint32_t creditTickMs = 0; // next countdown repaint, see ST_IDLE
 uint8_t idleMsgIdx = 0;    // which page of the idle prompt is showing
 uint32_t idleRotateMs = 0; // next idle repaint
@@ -1345,6 +1352,7 @@ bool bankCoin(const CoinDef *coin)
   // millis() here is AHEAD of the `now` loop() is holding, because this runs
   // later in the same pass. Everything that reads lastCoinMs goes through
   // reached() or sinceMs() for exactly that reason — see sinceMs().
+  prevCoinMs = lastCoinMs; // keep the old stamp: the gap is measured from it
   lastCoinMs = millis();
   return true;
 }
@@ -2105,11 +2113,14 @@ void reportCoin(uint16_t pulses, const CoinDef *coin, const CoinBurst *b = nullp
   LOG(F("AT           : "));
   LOG((millis() - bootMs) / 1000);
   LOG(F(" s since boot"));
-  if (credit > 0 && lastCoinMs)
+  // Measured from the PREVIOUS coin, not the one just banked. Measuring from
+  // lastCoinMs printed the gap since a stamp set microseconds earlier, so it
+  // always read 0 — a diagnostic that reported nothing.
+  if (prevCoinMs)
   {
     LOG(F(",  "));
-    LOG((millis() - lastCoinMs) / 1000);
-    LOG(F(" s after the last one"));
+    LOG(sinceMs(millis(), prevCoinMs) / 1000);
+    LOG(F(" s after the previous coin"));
   }
   LOGLN();
   LOG(F("COIN IN      : "));
