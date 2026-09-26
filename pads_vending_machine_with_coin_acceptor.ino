@@ -2075,6 +2075,16 @@ void clearButtonService()
 void reportCoin(uint16_t pulses, const CoinDef *coin, const CoinBurst *b = nullptr)
 {
   rule();
+  LOG(F("AT           : "));
+  LOG((millis() - bootMs) / 1000);
+  LOG(F(" s since boot"));
+  if (credit > 0 && lastCoinMs)
+  {
+    LOG(F(",  "));
+    LOG((millis() - lastCoinMs) / 1000);
+    LOG(F(" s after the last one"));
+  }
+  LOGLN();
   LOG(F("COIN IN      : "));
   LOG(pulses);
   LOGLN(pulses == 1 ? F(" pulse") : F(" pulses"));
@@ -3640,11 +3650,17 @@ void loop()
       // almost immediately and wipe the credit on the very next pass.
       if (CREDIT_TIMEOUT_MS > 0 && (now - lastCoinMs) > CREDIT_TIMEOUT_MS)
       {
+        // Print the MEASURED wait, not the configured one. Printing the
+        // setting here made the log useless for telling "she really did take
+        // two minutes" apart from "something cleared it early" — the two look
+        // identical, and only one of them is a bug.
         LOG(F("Part payment of KSH "));
         LOG(credit);
-        LOG(F(" timed out after "));
+        LOG(F(" cleared after an actual wait of "));
+        LOG((now - lastCoinMs) / 1000);
+        LOG(F(" s (limit "));
         LOG(CREDIT_TIMEOUT_MS / 1000);
-        LOGLN(F(" s, cleared."));
+        LOGLN(F(" s)."));
         LOGLN(F("  Nobody came back for it. The coin is in the box and there"));
         LOGLN(F("  is no way to return it — see CREDIT_TIMEOUT_MS."));
         setCredit(0);
