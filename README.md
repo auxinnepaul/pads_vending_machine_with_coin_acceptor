@@ -10,6 +10,11 @@ out of scope for this build.
 Everything you need to bring it up, calibrate it and diagnose it is on the
 **serial console at 115200**. Type `?` for the command list.
 
+**[`firmware_dev_paperwork/`](firmware_dev_paperwork/README.md)** — design
+decisions, how the firmware works, bench procedures, log reference, and the
+progress log. Read that before changing anything; read this before building
+anything.
+
 **[Bench wiring card →](https://claude.ai/artifact/36fmakGo1G3eLnhrZJe6Qf)** —
 the power tree, the pin map, the three things that kill hardware and the
 bring-up order, on one page you can open on a phone at the bench. *Private to
