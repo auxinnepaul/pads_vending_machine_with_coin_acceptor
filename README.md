@@ -260,6 +260,79 @@ Two inductive things hang off the 12 V rail: the motor and the acceptor's gate
 solenoid. Both dump a reverse spike when switched off. Left alone that spike
 travels the whole rail, which is what browns out the LCD.
 
+## Shopping list — suppression and decoupling
+
+Everything here is cheap and most of it is pennies. Buy spares of the small
+ceramics.
+
+### Bulk — the electrolytics
+
+| Value | Voltage | Qty | Goes | Why |
+|---|---|---|---|---|
+| 1000 µF | **25 V** or 35 V | 1 | Across the **12 V rail**, at the buck input | Absorbs the sag when the motor starts. This is the one that stops brownouts |
+| 1000 µF | **25 V** | 1 | At the **coin acceptor's** 12 V terminals | It fires a gate solenoid on every coin |
+| 470–1000 µF | **16 V** | 1 | At the **buck's 5 V output** | Holds the 5 V rail up through the dip |
+| 100 µF | **16 V** | 2 | At the **LCD backpack**, and at the **relay module VCC** | These boards ship with almost no decoupling |
+
+**Voltage rating is not optional.** The rule of thumb is at least twice the
+working voltage: 25 V on a 12 V rail, 16 V on a 5 V rail. A 16 V part on the
+12 V rail will fail, and electrolytics fail messily.
+
+Polarity matters. The stripe is the **negative** leg.
+
+### Fast — the ceramics
+
+An electrolytic has internal resistance and inductance and is poor above about
+100 kHz, which is exactly where switching noise lives. **Every electrolytic
+above wants a 100 nF ceramic in parallel with it**, physically close. Bulk and
+bypass are two jobs, not one.
+
+| Value | Voltage | Qty | Goes |
+|---|---|---|---|
+| 100 nF | 50 V+ | **6** | One beside each electrolytic above, plus spares |
+| 47–100 nF | **50 V**, 100 V better | 1 | **Across the motor terminals** — the brush-arcing fix |
+| 10 nF | 50 V+ | 2 | Motor terminal to motor case, if the case is metal |
+| 10 nF | 50 V+ | 1 | Coin-line filter, only if needed (below) |
+
+47 nF across the motor is fine — the useful range is 10–100 nF. Two 47 nF in
+parallel make 94 nF.
+
+### Semiconductors
+
+| Part | Qty | Goes | Notes |
+|---|---|---|---|
+| **1N5408** (3 A) | 1 | Flyback across the **motor terminals** | **Band to POSITIVE.** Backwards is a dead short |
+| 1N4007 (1 A) | — | Only for a small gearmotor | Marginal on a wiper motor |
+| SMBJ15A or P6KE15A | 1 | Optional TVS across the acceptor's 12 V | Clamps what the capacitors miss |
+
+### Resistors
+
+| Value | Qty | Goes |
+|---|---|---|
+| 10 kΩ | 2 | Pull-down on the motor relay pin, pull-up on the inhibit relay pin |
+| 4.7 kΩ | 2 | I2C pull-ups, if you remove the backpack's 5 V ones |
+| 1 kΩ | 1 | Coin-line filter, only if needed |
+
+### If the motor capacitor alone does not reach zero
+
+Filter at the other end instead of the source:
+
+```
+acceptor ──[ 1 kΩ ]──┬── GPIO 18
+                     │
+                   10 nF
+                     │
+                    GND
+```
+
+10 µs time constant — far below the 50–105 ms between real coin pulses, so it
+strips the fast induced edges without touching anything real.
+
+Keep this in reserve. The motor capacitor is the better place to start because
+it stops the noise being generated rather than tolerating it.
+
+---
+
 ### First work out which noise you have
 
 The firmware counts every induced pulse it throws away and prints the **rate**,
