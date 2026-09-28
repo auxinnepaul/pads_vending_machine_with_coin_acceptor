@@ -393,43 +393,6 @@ const bool INHIBIT_RELAY_ACTIVE_HIGH = false;
 //           Bench use only.
 const bool INHIBIT_CONTACT_IS_NC = true;
 
-// --- OPEN-DRAIN EXPERIMENT FOR A STUBBORN ACTIVE-LOW MODULE ----------------
-//
-//  false = normal push-pull output. The pin actively drives 0 V or 3.3 V.
-//  true  = open-drain. The pin pulls LOW, and for HIGH it simply LETS GO,
-//          leaving the relay module's own pull-up to decide the level.
-//
-//  WHY THIS EXISTS, AND WHY THE INTERNAL PULL-UP IS NOT THE ANSWER.
-//
-//  An internal pull-up cannot help here, for two separate reasons:
-//
-//    On a push-pull OUTPUT it does nothing at all — the output driver wins,
-//    so the pull-up is simply not in the circuit.
-//
-//    During the boot window it is not available either. The ESP32 comes out
-//    of reset with its pins as inputs and pull-ups DISABLED, and setup() is
-//    the first thing that could enable one — which is exactly the window the
-//    resistor was meant to cover. Only an EXTERNAL resistor holds a pin
-//    during boot.
-//
-//  And on a 5 V active-low opto module the internal pull-up would make things
-//  WORSE: at roughly 45k to 3.3 V it is far weaker than a push-pull drive, so
-//  the input LED conducts more, not less.
-//
-//  What CAN work is letting go entirely. If the module has its own pull-up to
-//  its 5 V supply, an open-drain pin releases and the module pulls its own
-//  input to 5 V, which fully starves the LED and the relay releases.
-//
-//  THE COST, STATED PLAINLY: that puts 5 V on a pin which is NOT 5 V tolerant.
-//  It usually survives — the pull-up is weak and the clamp diodes absorb it —
-//  but it is out of spec and degrades the pin over months.
-//
-//  So use this to CONFIRM the diagnosis, not to ship. If open-drain makes the
-//  relay release, you have proved the module needs more than 3.3 V to turn
-//  off, and the proper fix is to feed its logic VCC from 3V3 (JD-VCC jumper)
-//  or drive it through a small NPN.
-const bool INHIBIT_PIN_OPEN_DRAIN = true; // DIAGNOSTIC — put back to false
-
 // --- PAD STOCK SWITCH ------------------------------------------------------
 // A mechanical limit switch that tells the machine whether there are pads left
 // to dispense, so it can stop taking money BEFORE somebody pays for nothing.
@@ -1534,11 +1497,6 @@ void motorOff()
   // pulses, worse than starting. Keep the line muted well past it.
   coinUnmuteMs = millis() + MOTOR_NOISE_SETTLE_MS;
 }
-
-// Bench override for the inhibit pin: -1 automatic, 0 forced LOW, 1 forced
-// HIGH. Only the  n  command sets it, and only so that the pin level and the
-// relay's behaviour can be compared directly instead of inferred.
-int8_t inhibitOverride = -1;
 
 // Turn the coin slot on or off, through the second relay.
 //
@@ -2648,38 +2606,17 @@ bool selfTest(bool verbose)
   LOG(F("  inhibit pin : GPIO "));
   LOG(PIN_INHIBIT);
   LOG(F(", active "));
-  LOG(INHIBIT_RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
-  LOGLN(INHIBIT_PIN_OPEN_DRAIN ? F(", OPEN-DRAIN") : F(", push-pull"));
-  if (INHIBIT_PIN_OPEN_DRAIN)
-  {
-    LOGLN(F("  OPEN-DRAIN is a diagnostic, not a shipping setting. The pin"));
-    LOGLN(F("  lets go instead of driving HIGH, so the module's own pull-up"));
-    LOGLN(F("  sets the level — which may be 5 V on a pin that is not 5 V"));
-    LOGLN(F("  tolerant. If this makes the relay release, you have proved it"));
-    LOGLN(F("  needs more than 3.3 V to turn off. Fix it in hardware and put"));
-    LOGLN(F("  this back to false."));
-  }
+  LOGLN(INHIBIT_RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
   if (!INHIBIT_RELAY_ACTIVE_HIGH)
   {
     LOG(F("  Active LOW, so GPIO "));
     LOG(PIN_INHIBIT);
-    LOGLN(F(" needs a 10k pull-UP to 3V3,"));
-    LOGLN(F("  not a pull-down. The pin floats until setup() runs; held low"));
-    LOGLN(F("  through that window the relay energises, the NC contact opens,"));
-    LOGLN(F("  and the slot is live every time you reset."));
-    LOGLN();
-    LOGLN(F("  AN ACTIVE-LOW MODULE IS NOT THE SAME PROBLEM AS AN ACTIVE-HIGH"));
-    LOGLN(F("  ONE, and the motor relay working proves nothing about this."));
-    LOGLN(F("    active HIGH: pin -> resistor -> LED -> GND. 3.3 V switches it"));
-    LOGLN(F("                 ON easily, and LOW switches it fully off."));
-    LOGLN(F("    active LOW : 5 V -> LED -> resistor -> pin. Pulling LOW"));
-    LOGLN(F("                 switches it ON fine, but turning it OFF needs"));
-    LOGLN(F("                 the pin near the module's 5 V. An ESP32 HIGH is"));
-    LOGLN(F("                 3.3 V, leaving ~1.7 V across the LED, which is"));
-    LOGLN(F("                 often enough to keep it conducting."));
-    LOGLN(F("  Symptom: it energises on demand and then never releases."));
-    LOGLN(F("  Fix: feed the module's logic VCC from 3V3 (JD-VCC jumper), or"));
-    LOGLN(F("  drive it through a small NPN and set ACTIVE_HIGH true."));
+    LOGLN(F(" needs a 10k pull-UP to 3V3, not a"));
+    LOGLN(F("  pull-down: the pin floats until setup() runs, and held low"));
+    LOGLN(F("  through that window the slot is live on every reset."));
+    LOGLN(F("  NOTE: an ESP32's 3.3 V cannot turn OFF a 5 V active-low module"));
+    LOGLN(F("  — it energises and never releases. Drive it through an NPN and"));
+    LOGLN(F("  set ACTIVE_HIGH true. See README."));
   }
   LOG(F("  contact     : "));
   if (INHIBIT_CONTACT_IS_NC)
@@ -2698,7 +2635,6 @@ bool selfTest(bool verbose)
   LOG(digitalRead(PIN_INHIBIT) == HIGH ? F("HIGH") : F("LOW"));
   LOGLN(F("  <- compare this with what the relay is doing"));
   LOGLN(F("  If they disagree, the config is wrong, not the firmware."));
-  LOGLN(F("  n0 and n1 hold the pin either way so you can check."));
   LOG(F("  clear button: GPIO "));
   LOG(PIN_CLEAR);
   LOG(F(" reads "));
@@ -2858,7 +2794,6 @@ void printHelp()
   LOGLN(F("  l        LCD test pattern"));
   LOGLN(F("  b        buzzer test"));
   LOGLN(F("  n        click the inhibit relay 3x — does it actually move?"));
-  LOGLN(F("  n0 / n1  hold that pin LOW / HIGH to read the relay's polarity"));
   LOGLN();
   LOGLN(F("  x        clear a latched fault"));
   LOGLN(F("           (or hold the front-panel button for 1 s)"));
@@ -3353,53 +3288,15 @@ void handleCommand(char *s)
     break;
 
   case 'n':
-    // The firmware saying "inhibited" and the relay actually moving are two
-    // different claims, and only the first is visible from a console. This
-    // makes the second measurable: drive the pin by hand, watch the relay,
-    // and read the polarity straight off the bench instead of arguing it.
-    if (n == 0 || n == 1)
-    {
-      inhibitOverride = (int8_t)n;
-      digitalWrite(PIN_INHIBIT, n ? HIGH : LOW);
-      LOG(F("GPIO "));
-      LOG(PIN_INHIBIT);
-      LOG(F(" held "));
-      LOGLN(n ? F("HIGH — it should now sit at 3.3 V")
-              : F("LOW — it should now sit at 0 V"));
-      LOGLN(F("  PUT A METER ON THAT PIN. Black probe on GND, red on the pin."));
-      LOGLN(F("  It is held until you type  n , so take your time."));
-      LOGLN();
-      LOGLN(F("  This is the measurement that settles it, because the console"));
-      LOGLN(F("  can only report what the firmware ASKED for. What the pin is"));
-      LOGLN(F("  actually doing is a different question and only a meter"));
-      LOGLN(F("  answers it."));
-      LOGLN();
-      LOGLN(F("  n1 reads 3.3 V and the relay stays ON"));
-      LOGLN(F("    The pin is doing its job. The module will not release on"));
-      LOGLN(F("    3.3 V — its input LED sits at the module's 5 V supply, so"));
-      LOGLN(F("    3.3 V still leaves 1.7 V across it. Feed the module's logic"));
-      LOGLN(F("    VCC from 3V3 instead of 5 V (many boards have a JD-VCC"));
-      LOGLN(F("    jumper for exactly this), or drive it through a small NPN."));
-      LOGLN();
-      LOGLN(F("  n1 reads near 0 V"));
-      LOGLN(F("    The pin is NOT being driven, or something is holding it"));
-      LOGLN(F("    down. Disconnect the relay module and measure again: if it"));
-      LOGLN(F("    reads 3.3 V unloaded, the module is loading the pin harder"));
-      LOGLN(F("    than it can source."));
-      LOGLN();
-      LOGLN(F("  The relay follows n0 / n1 correctly"));
-      LOGLN(F("    Nothing is wrong. Whichever level ENERGISES it is the"));
-      LOGLN(F("    module's active level — set INHIBIT_RELAY_ACTIVE_HIGH to"));
-      LOGLN(F("    match and the automatic path will work too."));
-      break;
-    }
-    inhibitOverride = -1;
-    LOGLN(F("Automatic again. Clicking the relay three times — LISTEN."));
+    // Click the inhibit relay so you can hear whether it actually moves.
+    // "The firmware says inhibited" and "the relay moved" are different
+    // claims, and only the first is visible from a console.
+    LOGLN(F("Clicking the coin-inhibit relay three times. LISTEN."));
     LOGLN(F("  Three clicks = driven correctly."));
-    LOGLN(F("  Silence      = it never moves. Check the pin, the module's"));
-    LOGLN(F("                 supply, and that its ground is common with the"));
-    LOGLN(F("                 ESP32's. A relay module with no shared ground"));
-    LOGLN(F("                 does nothing at all."));
+    LOGLN(F("  Silence      = check the pin, the module's supply, and that"));
+    LOGLN(F("                 its ground is common with the ESP32's."));
+    LOGLN(F("  One click,   = a 5 V active-low module cannot be released by"));
+    LOGLN(F("  then stuck     3.3 V. It needs an NPN — see README."));
     for (uint8_t i = 0; i < 3; i++)
     {
       coinAcceptorAllow(false);
@@ -3408,48 +3305,6 @@ void handleCommand(char *s)
       holdFor(450);
     }
     LOGLN(F("Done. loop() puts it back to whatever the state calls for."));
-    break;
-
-  case 'l':
-    if (!lcdOk)
-    {
-      LOGLN(F("No LCD found. Run  z  to scan."));
-      break;
-    }
-    if (vendInFlight())
-    {
-      LOGLN(F("A vend is in progress. This holds the screen for two seconds"));
-      LOGLN(F("and would stop the beam being watched. Wait for IDLE."));
-      break;
-    }
-    LOGLN(F("LCD: re-initialised, both lines filled, then back to idle."));
-    LOGLN(F("If the screen was showing garbage, this clears it. If it comes"));
-    LOGLN(F("back after the next vend, the motor is browning out the display"));
-    LOGLN(F("— see README, 'Funny symbols on the screen'."));
-    lcdNeedsReinit = true; // force a full rebuild, that is the point of  l
-    say("0123456789ABCDEF", "BRICAPA  v" FW_VERSION);
-    holdFor(2000);
-    repaintForState();
-    break;
-
-  case 'L':
-    logEvents = !logEvents;
-    LOG(F("Event logging "));
-    LOGLN(logEvents ? F("ON")
-                             : F("OFF - typed commands still answer in full"));
-    LOGLN(F("Not saved. Set SERIAL_LOG_DEFAULT in SECTION 7 to keep it."));
-    break;
-
-  case 'k':
-    if (!PAD_SWITCH_FITTED)
-    {
-      LOGLN(F("Stock switch is bypassed (PAD_SWITCH_FITTED is false)."));
-      LOGLN(F("Set it true in SECTION 4 once the switch is wired."));
-      break;
-    }
-    stockWatch = !stockWatch;
-    LOGLN(stockWatch ? F("Stock watch ON - work the switch lever.")
-                              : F("Stock watch off."));
     break;
 
   case 'i':
@@ -3675,7 +3530,7 @@ void setup()
 {
   // Relay first and before anything else, so the motor cannot twitch on boot.
   pinMode(PIN_RELAY, OUTPUT);
-  pinMode(PIN_INHIBIT, INHIBIT_PIN_OPEN_DRAIN ? OUTPUT_OPEN_DRAIN : OUTPUT);
+  pinMode(PIN_INHIBIT, OUTPUT);
   coinAcceptorAllow(false); // inhibited from the first instruction
   motorOff();
 
@@ -4145,8 +4000,7 @@ void loop()
   //  Driving it from state in one place means the slot can never disagree with
   //  what the machine is actually doing. There is no way to enter a state and
   //  forget to open or close it, because nothing else touches it.
-  if (inhibitOverride < 0)
-    coinAcceptorAllow(state != ST_EMPTY && state != ST_FAULT);
+  coinAcceptorAllow(state != ST_EMPTY && state != ST_FAULT);
 
   switch (state)
   {
