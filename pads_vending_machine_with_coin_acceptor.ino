@@ -393,6 +393,43 @@ const bool INHIBIT_RELAY_ACTIVE_HIGH = false;
 //           Bench use only.
 const bool INHIBIT_CONTACT_IS_NC = true;
 
+// --- OPEN-DRAIN EXPERIMENT FOR A STUBBORN ACTIVE-LOW MODULE ----------------
+//
+//  false = normal push-pull output. The pin actively drives 0 V or 3.3 V.
+//  true  = open-drain. The pin pulls LOW, and for HIGH it simply LETS GO,
+//          leaving the relay module's own pull-up to decide the level.
+//
+//  WHY THIS EXISTS, AND WHY THE INTERNAL PULL-UP IS NOT THE ANSWER.
+//
+//  An internal pull-up cannot help here, for two separate reasons:
+//
+//    On a push-pull OUTPUT it does nothing at all — the output driver wins,
+//    so the pull-up is simply not in the circuit.
+//
+//    During the boot window it is not available either. The ESP32 comes out
+//    of reset with its pins as inputs and pull-ups DISABLED, and setup() is
+//    the first thing that could enable one — which is exactly the window the
+//    resistor was meant to cover. Only an EXTERNAL resistor holds a pin
+//    during boot.
+//
+//  And on a 5 V active-low opto module the internal pull-up would make things
+//  WORSE: at roughly 45k to 3.3 V it is far weaker than a push-pull drive, so
+//  the input LED conducts more, not less.
+//
+//  What CAN work is letting go entirely. If the module has its own pull-up to
+//  its 5 V supply, an open-drain pin releases and the module pulls its own
+//  input to 5 V, which fully starves the LED and the relay releases.
+//
+//  THE COST, STATED PLAINLY: that puts 5 V on a pin which is NOT 5 V tolerant.
+//  It usually survives — the pull-up is weak and the clamp diodes absorb it —
+//  but it is out of spec and degrades the pin over months.
+//
+//  So use this to CONFIRM the diagnosis, not to ship. If open-drain makes the
+//  relay release, you have proved the module needs more than 3.3 V to turn
+//  off, and the proper fix is to feed its logic VCC from 3V3 (JD-VCC jumper)
+//  or drive it through a small NPN.
+const bool INHIBIT_PIN_OPEN_DRAIN = false;
+
 // --- PAD STOCK SWITCH ------------------------------------------------------
 // A mechanical limit switch that tells the machine whether there are pads left
 // to dispense, so it can stop taking money BEFORE somebody pays for nothing.
@@ -2611,7 +2648,17 @@ bool selfTest(bool verbose)
   LOG(F("  inhibit pin : GPIO "));
   LOG(PIN_INHIBIT);
   LOG(F(", active "));
-  LOGLN(INHIBIT_RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
+  LOG(INHIBIT_RELAY_ACTIVE_HIGH ? F("HIGH") : F("LOW"));
+  LOGLN(INHIBIT_PIN_OPEN_DRAIN ? F(", OPEN-DRAIN") : F(", push-pull"));
+  if (INHIBIT_PIN_OPEN_DRAIN)
+  {
+    LOGLN(F("  OPEN-DRAIN is a diagnostic, not a shipping setting. The pin"));
+    LOGLN(F("  lets go instead of driving HIGH, so the module's own pull-up"));
+    LOGLN(F("  sets the level — which may be 5 V on a pin that is not 5 V"));
+    LOGLN(F("  tolerant. If this makes the relay release, you have proved it"));
+    LOGLN(F("  needs more than 3.3 V to turn off. Fix it in hardware and put"));
+    LOGLN(F("  this back to false."));
+  }
   if (!INHIBIT_RELAY_ACTIVE_HIGH)
   {
     LOG(F("  Active LOW, so GPIO "));
@@ -3628,7 +3675,7 @@ void setup()
 {
   // Relay first and before anything else, so the motor cannot twitch on boot.
   pinMode(PIN_RELAY, OUTPUT);
-  pinMode(PIN_INHIBIT, OUTPUT);
+  pinMode(PIN_INHIBIT, INHIBIT_PIN_OPEN_DRAIN ? OUTPUT_OPEN_DRAIN : OUTPUT);
   coinAcceptorAllow(false); // inhibited from the first instruction
   motorOff();
 
