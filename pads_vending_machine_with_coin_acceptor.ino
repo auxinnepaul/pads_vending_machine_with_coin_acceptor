@@ -234,7 +234,7 @@ const uint8_t PIN_IR = 27;
 const uint8_t PIN_BUZZER = 25;
 const uint8_t PIN_SDA = 21;
 const uint8_t PIN_SCL = 22;
-const uint8_t PIN_INHIBIT = 19; // relay 2 -> HX-916 2-pin inhibit port
+const uint8_t PIN_INHIBIT = 4; // relay 2 -> HX-916 2-pin inhibit port
 const uint8_t PIN_CLEAR = 23;   // jam-clear button to GND (INPUT_PULLUP)
 // On 13 rather than 33 purely because 13 lands next to the terminal block on
 // this build. Both are equally valid: plain GPIOs, no strapping, no flash, and
@@ -3305,11 +3305,33 @@ void handleCommand(char *s)
       LOG(F("GPIO "));
       LOG(PIN_INHIBIT);
       LOG(F(" held "));
-      LOGLN(n ? F("HIGH (3.3 V). Look at the relay.")
-              : F("LOW (0 V). Look at the relay."));
-      LOGLN(F("  n0 and n1 to compare, then n to release it."));
-      LOGLN(F("  Whichever level makes the relay ENERGISE is the module's"));
-      LOGLN(F("  active level: set INHIBIT_RELAY_ACTIVE_HIGH to match."));
+      LOGLN(n ? F("HIGH — it should now sit at 3.3 V")
+              : F("LOW — it should now sit at 0 V"));
+      LOGLN(F("  PUT A METER ON THAT PIN. Black probe on GND, red on the pin."));
+      LOGLN(F("  It is held until you type  n , so take your time."));
+      LOGLN();
+      LOGLN(F("  This is the measurement that settles it, because the console"));
+      LOGLN(F("  can only report what the firmware ASKED for. What the pin is"));
+      LOGLN(F("  actually doing is a different question and only a meter"));
+      LOGLN(F("  answers it."));
+      LOGLN();
+      LOGLN(F("  n1 reads 3.3 V and the relay stays ON"));
+      LOGLN(F("    The pin is doing its job. The module will not release on"));
+      LOGLN(F("    3.3 V — its input LED sits at the module's 5 V supply, so"));
+      LOGLN(F("    3.3 V still leaves 1.7 V across it. Feed the module's logic"));
+      LOGLN(F("    VCC from 3V3 instead of 5 V (many boards have a JD-VCC"));
+      LOGLN(F("    jumper for exactly this), or drive it through a small NPN."));
+      LOGLN();
+      LOGLN(F("  n1 reads near 0 V"));
+      LOGLN(F("    The pin is NOT being driven, or something is holding it"));
+      LOGLN(F("    down. Disconnect the relay module and measure again: if it"));
+      LOGLN(F("    reads 3.3 V unloaded, the module is loading the pin harder"));
+      LOGLN(F("    than it can source."));
+      LOGLN();
+      LOGLN(F("  The relay follows n0 / n1 correctly"));
+      LOGLN(F("    Nothing is wrong. Whichever level ENERGISES it is the"));
+      LOGLN(F("    module's active level — set INHIBIT_RELAY_ACTIVE_HIGH to"));
+      LOGLN(F("    match and the automatic path will work too."));
       break;
     }
     inhibitOverride = -1;
