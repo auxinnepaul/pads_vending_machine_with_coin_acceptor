@@ -1038,7 +1038,8 @@ bool irWatch = false; // console command  i
 // Motor backstop
 bool motorRunning = false;
 uint32_t motorOnSince = 0;
-uint32_t lastMotorRunMs = 0;  // how long the last run lasted, for the noise rate
+uint32_t lastMotorRunMs = 0;  // how long the last run lasted
+uint32_t mutedMotorMs = 0;    // total motor time since the coin line was muted
 uint32_t slowestDropMs = 0;   // worst delivery this session, sets the timeout
 
 // Counters. RAM only, and reset on every boot. The meter balance is the
@@ -1468,6 +1469,13 @@ void motorOn()
   // Mute BEFORE the relay moves, and bin any burst already in progress — a
   // coin that was still being read when a vend started cannot be trusted now
   // that noise is about to be mixed into it.
+  // A soak blocks, so loop() never runs between its cycles and the mute is
+  // never released. Motor time therefore has to ACCUMULATE across every run in
+  // one mute window, or the pulse count gets divided by the last cycle alone
+  // and reports a rate several times too high.
+  if (!coinMuted)
+    mutedMotorMs = 0; // a fresh mute window starts a fresh total
+
   portENTER_CRITICAL(&coinMux);
   coinMuted = true;
   isrBurst = 0;
@@ -1483,6 +1491,7 @@ void motorOff()
 {
   digitalWrite(PIN_RELAY, RELAY_ACTIVE_HIGH ? LOW : HIGH);
   lastMotorRunMs = millis() - motorOnSince;
+  mutedMotorMs += lastMotorRunMs;
   motorRunning = false;
   // The coil collapsing as the relay opens is the WORST moment for induced
   // pulses, worse than starting. Keep the line muted well past it.
@@ -3812,7 +3821,7 @@ void loop()
       LOG(junk);
       LOG(junk == 1 ? F(" pulse induced by the motor over ")
                     : F(" pulses induced by the motor over "));
-      LOG(lastMotorRunMs);
+      LOG(mutedMotorMs);
       LOGLN(F(" ms of running."));
 
       //  THE RATE IS THE DIAGNOSIS, not the count. Two quite different faults
@@ -3827,9 +3836,9 @@ void loop()
       //    capacitors across the motor terminals.
       //
       //  Printing per-second lets the bench tell them apart at a glance.
-      if (lastMotorRunMs > 100)
+      if (mutedMotorMs > 100)
       {
-        uint32_t perSec = (junk * 1000UL) / lastMotorRunMs;
+        uint32_t perSec = (junk * 1000UL) / mutedMotorMs;
         LOG(F("  That is about "));
         LOG(perSec);
         LOGLN(F(" per second of motor run."));
