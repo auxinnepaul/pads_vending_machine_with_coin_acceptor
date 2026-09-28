@@ -455,6 +455,7 @@ takes the command after a short pause in typing.
   BENCH TESTS
   m<ms>    run the motor for <ms> — time one revolution
   t        full test vend, no coin needed
+  T<n>     soak: n vends back to back, times every drop
   v<n>     pretend a coin of <n> pulses went in
   i        watch the IR sensor live
   k        watch the pad stock switch live
@@ -744,6 +745,54 @@ friend, or give up honestly. Twenty seconds, which this used to be, was not.
 
 The countdown repaints **line 2 only**, without clearing the screen, so a
 once-a-second refresh does not flicker.
+
+## Finding the dispense timeout
+
+`DISPENSE_TIMEOUT_MS` ships at **7000 ms as a placeholder**. It is not
+measured, and the machine cannot be trusted at a site until it is.
+
+You cannot get the number from a few vends, and you certainly cannot get it
+from a finger at the sensor — that measures how fast a hand moves. It needs
+real pads down a real chute, enough of them to show the tail of the
+distribution, because the timeout has to survive the machine's worst pad and
+not its average one.
+
+**Load the coil and run a soak:**
+
+```
+T25
+```
+
+Twenty-five vends back to back, no coins, nothing charged. Every drop is
+timed. Press any key to stop early; it also stops by itself on an empty coil,
+a blocked chute, or three misses in a row.
+
+Each cycle waits up to **15 s** — far longer than the real timeout, and
+deliberately so. A stopwatch that stops before the event cannot measure it: a
+6 s drop under a 5 s timeout is recorded as "no pad" and the number you are
+hunting never appears.
+
+```
+SOAK RESULT
+  delivered    : 24 of 25
+  no pad       : 1   (4%)
+  fastest      : 890 ms
+  average      : 1230 ms
+  SLOWEST      : 2140 ms   <- this is the one that matters
+
+  SET DISPENSE_TIMEOUT_MS TO 4500 ms
+  Try it now:  o4500
+```
+
+Then write that number into SECTION 5 and reflash — the console does not save
+it.
+
+**Twice the slowest, not the average.** A timeout set on the average turns
+every slow pad into a paying customer being told the machine is broken.
+
+**The miss percentage is the real result.** It is the answer to the only
+question the client actually asked, and no amount of firmware improves it —
+that number is the coil and the pads.
 
 ### Surviving a power cut
 

@@ -738,6 +738,27 @@ const uint32_t PAD_SWITCH_DEBOUNCE_MS = 400;
 //  CONSOLE     none — needs a reflash
 const uint32_t IR_STUCK_WARN_MS = 5000;
 
+// ---------------------------------------------------------------------------
+//  SOAK TEST  (console command  T<n> )
+// ---------------------------------------------------------------------------
+//  How long a soak cycle waits for a pad before calling it a failure.
+//
+//  This is deliberately far longer than DISPENSE_TIMEOUT_MS, and that is the
+//  whole point. You cannot measure the slowest drop with a stopwatch that
+//  stops before it: a 6 s drop under a 5 s timeout is recorded as "no pad",
+//  and the number you are hunting never appears. Keep this generous, find the
+//  real distribution, then set the real timeout from it.
+//
+//  Like  m<ms> , a soak blocks, so the loop() motor backstop is not running
+//  while it does. This ceiling is the only limit on one cycle. That is fine
+//  for a command an operator types while watching the machine and wrong for
+//  anything automatic, which is why nothing automatic uses it.
+const uint32_t SOAK_MAX_WAIT_MS = 15000;
+
+//  Pause between cycles: lets the pad clear the beam, the coil settle, and
+//  gives you time to watch what the mechanism is actually doing.
+const uint32_t SOAK_GAP_MS = 2000;
+
 // ===========================================================================
 //  SECTION 6 — SOUND
 // ===========================================================================
@@ -1067,6 +1088,7 @@ static bool vendInFlight();
 void repaintForState();
 void wakeDisplay();
 void sleepDisplay();
+void soakTest(uint16_t cycles);
 bool ensureCreditStore();
 
 // Debounced pad stock switch
@@ -2746,6 +2768,8 @@ void printHelp()
   LOGLN(F("  BENCH TESTS"));
   LOGLN(F("  m<ms>    run the motor for <ms> — time one revolution"));
   LOGLN(F("  t        full test vend, no coin needed"));
+  LOGLN(F("  T<n>     soak: n vends back to back, times every drop and"));
+  LOGLN(F("           tells you what to set the dispense timeout to. T25"));
   LOGLN(F("  v<n>     pretend a coin of <n> pulses went in"));
   LOGLN(F("  i        watch the IR sensor live (any key stops it)"));
   LOGLN(F("  k        watch the pad stock switch live"));
@@ -2934,6 +2958,197 @@ void runMotorFor(uint32_t ms)
   LOGLN(F("DISPENSE_TIMEOUT_MS to about double it  (o<ms>)."));
   // Not showIdle(): this command is deliberately allowed while EMPTY, and the
   // machine is still out of stock with the slot inhibited when it finishes.
+  repaintForState();
+}
+
+// Run the coil over and over with no coins, timing every drop.
+//
+//  THIS IS HOW THE DISPENSE TIMEOUT GETS ITS NUMBER. Everything else is a
+//  guess: a finger at the sensor measures how fast a hand moves, and a handful
+//  of vends does not show you the tail. Twenty or thirty real pads down a real
+//  chute shows the distribution, and the timeout is set from its worst case.
+//
+//  It also answers the question the client actually asked, which is not "does
+//  it work" but "how many out of thirty come out cleanly".
+//
+//  Stops early on an empty coil, a blocked chute, three consecutive failures,
+//  or any keypress.
+void soakTest(uint16_t cycles)
+{
+  if (cycles == 0 || cycles > 500)
+  {
+    LOGLN(F("Use T1 to T500.  T25 is a good first run."));
+    return;
+  }
+
+  rule();
+  LOG(F("SOAK TEST — "));
+  LOG(cycles);
+  LOGLN(F(" cycles, no coins, nothing charged."));
+  LOGLN(F("  Load the coil first. Press any key to stop early."));
+  LOG(F("  Waiting up to "));
+  LOG(SOAK_MAX_WAIT_MS / 1000);
+  LOGLN(F(" s per drop, deliberately longer than the"));
+  LOGLN(F("  real timeout so slow drops are measured instead of cut off."));
+  rule();
+
+  uint16_t delivered = 0, missed = 0, missedInARow = 0;
+  uint32_t fastest = 0xFFFFFFFF, worst = 0, total = 0;
+  bool aborted = false;
+
+  for (uint16_t i = 1; i <= cycles; i++)
+  {
+    if (!padsPresent())
+    {
+      LOGLN(F("  Stock switch says the coil is empty. Stopping."));
+      break;
+    }
+
+    // Never start over a blocked chute, same rule as a paid vend.
+    uint32_t t0 = millis();
+    bool clear = true;
+    while (millis() - t0 < IR_SETTLE_MS)
+    {
+      if (padSeen())
+      {
+        clear = false;
+        break;
+      }
+      buzzerService();
+      delay(1);
+    }
+    if (!clear)
+    {
+      LOGLN(F("  Chute is blocked. Clear it and start again. Stopping."));
+      break;
+    }
+
+    char l2[17];
+    snprintf(l2, sizeof(l2), "%u of %u", i, cycles);
+    say("SOAK TEST", l2);
+
+    motorOn();
+    uint32_t start = millis();
+    bool dropped = false;
+    while (millis() - start < SOAK_MAX_WAIT_MS)
+    {
+      if (padSeen())
+      {
+        dropped = true;
+        break;
+      }
+      if (Serial.available())
+      {
+        aborted = true;
+        break;
+      }
+      buzzerService();
+      delay(1);
+    }
+    uint32_t took = millis() - start;
+    motorOff();
+
+    if (aborted)
+    {
+      while (Serial.available())
+        Serial.read(); // swallow the key that stopped it
+      LOGLN(F("  Stopped by keypress."));
+      break;
+    }
+
+    LOG(F("  #"));
+    LOG(i);
+    if (dropped)
+    {
+      delivered++;
+      missedInARow = 0;
+      total += took;
+      if (took < fastest)
+        fastest = took;
+      if (took > worst)
+        worst = took;
+      if (took > slowestDropMs)
+        slowestDropMs = took;
+      LOG(F("  delivered in "));
+      LOG(took);
+      LOGLN(F(" ms"));
+    }
+    else
+    {
+      missed++;
+      missedInARow++;
+      beep(TONE_REJECT_HZ, TONE_REJECT_MS);
+      LOGLN(F("  NO PAD"));
+      if (missedInARow >= 3)
+      {
+        LOGLN(F("  Three in a row with nothing. Coil empty or jammed."));
+        LOGLN(F("  Stopping — the rest of the run would measure nothing."));
+        break;
+      }
+    }
+
+    holdFor(SOAK_GAP_MS); // let the beam clear and the coil settle
+  }
+
+  // ---- the answer ----
+  rule();
+  LOGLN(F("SOAK RESULT"));
+  rule();
+  LOG(F("  delivered    : "));
+  LOG(delivered);
+  LOG(F(" of "));
+  LOGLN(delivered + missed);
+  LOG(F("  no pad       : "));
+  LOG(missed);
+  if (delivered + missed > 0)
+  {
+    LOG(F("   ("));
+    LOG((missed * 100UL) / (delivered + missed));
+    LOG(F("%)"));
+  }
+  LOGLN();
+
+  if (delivered == 0)
+  {
+    LOGLN(F("  Nothing came out, so there is nothing to measure."));
+    LOGLN(F("  Load the coil and check the sensor with  i  first."));
+    rule();
+    repaintForState();
+    return;
+  }
+
+  LOG(F("  fastest      : "));
+  LOG(fastest);
+  LOGLN(F(" ms"));
+  LOG(F("  average      : "));
+  LOG(total / delivered);
+  LOGLN(F(" ms"));
+  LOG(F("  SLOWEST      : "));
+  LOG(worst);
+  LOGLN(F(" ms   <- this is the one that matters"));
+  LOGLN();
+
+  uint32_t suggested = ((worst * 2) + 499) / 500 * 500; // round up to 500 ms
+  LOG(F("  SET DISPENSE_TIMEOUT_MS TO "));
+  LOG(suggested);
+  LOGLN(F(" ms"));
+  LOG(F("  Try it now:  o"));
+  LOGLN(suggested);
+  LOGLN(F("  Then write that number into SECTION 5 and reflash, because the"));
+  LOGLN(F("  console does not save it."));
+  LOGLN();
+  LOGLN(F("  Twice the slowest, not the average: the machine has to survive"));
+  LOGLN(F("  its worst pad, and a timeout set on the average turns every slow"));
+  LOGLN(F("  one into a paying customer being told the machine is broken."));
+
+  if (missed > 0)
+  {
+    LOGLN();
+    LOGLN(F("  The misses are the real result. That percentage is the answer"));
+    LOGLN(F("  to the only question the client actually asked, and no amount"));
+    LOGLN(F("  of firmware improves it — it is the coil and the pads."));
+  }
+  rule();
   repaintForState();
 }
 
@@ -3224,6 +3439,20 @@ void handleCommand(char *s)
       break;
     }
     runMotorFor(n < 0 ? 500 : (uint32_t)n);
+    break;
+
+  case 'T':
+    if (state == ST_FAULT)
+    {
+      LOGLN(F("Faulted. Clear with  x  first."));
+      break;
+    }
+    if (state != ST_IDLE && state != ST_EMPTY)
+    {
+      LOGLN(F("Busy. Wait for IDLE."));
+      break;
+    }
+    soakTest(n < 0 ? 25 : (uint16_t)n);
     break;
 
   case 't':
