@@ -441,7 +441,7 @@ const uint8_t MAX_BUTTON_RETRIES = 3;
 // SIXTEEN CHARACTERS MAXIMUM. The display is 16 x 2 and anything longer is
 // silently cut off, which is worse than a short message.
 //                                 |<-- 16 chars max -->|
-const char *SERVICE_CONTACT      = "CALL No. ON BOX";
+const char *SERVICE_CONTACT      = "07XX XXX XXX";
 
 // --- JAM-CLEAR BUTTON ------------------------------------------------------
 // Momentary NO button between PIN_CLEAR and GND. Mount it INSIDE the locked
@@ -2738,10 +2738,11 @@ bool selfTest(bool verbose)
     LOGLN(F("  !! Longer than the 16-character display. It will be cut off."));
     LOGLN(F("  !! Shorten SERVICE_CONTACT in SECTION 4."));
   }
-  else if (strstr(SERVICE_CONTACT, "0") == NULL)
+  else if (strchr(SERVICE_CONTACT, 'X') || strchr(SERVICE_CONTACT, 'x'))
   {
-    LOGLN(F("  Note: no digits in it. Put the real number printed on the"));
-    LOGLN(F("  machine here — GET HELP without saying who to get is no help."));
+    LOGLN(F("  !! STILL THE PLACEHOLDER. Put the real number printed on the"));
+    LOGLN(F("  !! machine here before this goes to a site — the screen tells"));
+    LOGLN(F("  !! a paying customer to call it."));
   }
 
   LOGLN(F("[9] BUZZER"));
@@ -4264,11 +4265,37 @@ void loop()
       //  sentence and paged across frames rather than abbreviated to fit.
       if (buttonRetries >= MAX_BUTTON_RETRIES)
       {
-        // Out of retries. She cannot fix this, so stop telling her to try and
-        // tell her who can.
-        char msg[64];
-        snprintf(msg, sizeof(msg), "SORRY THIS NEEDS HELP - %s", SERVICE_CONTACT);
-        sayPaged("JAMMED", msg, faultMsgIdx);
+        //  Out of retries. She cannot fix this, so stop telling her to try.
+        //
+        //  Two audiences read this same screen and neither has a laptop: the
+        //  customer standing there, and whoever eventually opens the door. The
+        //  customer's part comes first because she is here now, and the reason
+        //  to call is named — "you have paid" is what makes a call worth
+        //  making. The staff hint goes last, where it does not delay her.
+        //
+        //  Nothing here promises her money back. The machine cannot give it
+        //  back and must not imply otherwise; a person on the phone can.
+        //  KEEP IT SHORT. Every page is two seconds, and nobody stands in a
+        //  washroom for twenty of them. The first two pages have to carry the
+        //  whole point on their own — that she has paid, and the number — so
+        //  the message still works for someone who reads it and walks off.
+        //  The staff hint trails behind, where it delays nobody who is only
+        //  passing through.
+        //
+        //  Nothing here promises her money back. The machine cannot give it
+        //  back and must not imply otherwise; a person on the phone can.
+        char msg[120];
+        if (credit > 0)
+          snprintf(msg, sizeof(msg),
+                   "YOU PAID KSH %u - PLEASE CALL %s"
+                   " - STAFF CHECK COIL AND SENSOR",
+                   credit, SERVICE_CONTACT);
+        else
+          snprintf(msg, sizeof(msg),
+                   "NO PADS CAN COME OUT - PLEASE CALL %s"
+                   " - STAFF CHECK COIL AND SENSOR",
+                   SERVICE_CONTACT);
+        sayPaged("OUT OF ORDER", msg, faultMsgIdx);
       }
       else if (credit >= PAD_PRICE)
       {
