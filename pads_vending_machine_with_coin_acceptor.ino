@@ -561,12 +561,17 @@ uint32_t COIN_GAP_MS = 250;
 //              phantom fault in a washroom is not.
 //  CONSOLE     o<ms>   e.g.  o5000
 //
-//  MEASURED ON THIS MACHINE: successful drops have taken 775, 980, 1121, 1127,
-//  1209, 1436, 1465, 1510, 1545, 1752, 1819, 1940 and 2299 ms. The slowest is
-//  2299, so 3000 left only 700 ms of margin and was throwing JAMMED faults on
-//  a coil that was working. 5000 is a little over double the slowest observed
-//  drop, which is the rule this file asks for. Re-measure if the motor changes.
-uint32_t DISPENSE_TIMEOUT_MS = 5000;
+//  MEASURED ON THIS MACHINE. Most drops land between 900 and 1500 ms, but the
+//  distribution has a long tail: 930, 1006, 1109, 1127, 1191, 1401 — and then
+//  3503. That outlier is the number that matters, because the machine has to
+//  survive its worst day, not its average one. 3000 threw JAMMED faults on a
+//  working coil; 5000 left only 43% margin over 3503. 7000 is twice the
+//  slowest seen.
+//
+//  DO NOT TREAT THIS AS SETTLED. Status prints the slowest drop this session
+//  and warns when the timeout falls under twice it, so the machine tells you
+//  when it has outgrown the number instead of waiting for you to notice.
+uint32_t DISPENSE_TIMEOUT_MS = 7000;
 
 // ---------------------------------------------------------------------------
 //  CREDIT_TIMEOUT_MS — how long to keep asking for the rest of the money
@@ -981,7 +986,8 @@ bool irWatch = false; // console command  i
 // Motor backstop
 bool motorRunning = false;
 uint32_t motorOnSince = 0;
-uint32_t lastMotorRunMs = 0; // how long the last run lasted, for the noise rate
+uint32_t lastMotorRunMs = 0;  // how long the last run lasted, for the noise rate
+uint32_t slowestDropMs = 0;   // worst delivery this session, sets the timeout
 
 // Counters. RAM only, and reset on every boot. The meter balance is the
 // only thing that survives a power cut — see setCredit().
@@ -2834,6 +2840,28 @@ void printStatus()
   LOGLN(faultCount);
   LOG(F("  raw pulses   : "));
   LOGLN(isrTotal);
+  //  The timeout should be set from THIS machine's worst drop, not from a
+  //  number somebody picked once. A coil that is wearing, or a cold morning,
+  //  shows up here first — as shrinking margin — long before it shows up as a
+  //  customer being told OUT OF ORDER by a machine that was working.
+  LOG(F("  slowest drop : "));
+  if (slowestDropMs == 0)
+    LOGLN(F("nothing delivered yet"));
+  else
+  {
+    LOG(slowestDropMs);
+    LOG(F(" ms, timeout is "));
+    LOG(DISPENSE_TIMEOUT_MS);
+    LOGLN(F(" ms"));
+    if (DISPENSE_TIMEOUT_MS < slowestDropMs * 2)
+    {
+      LOG(F("  !! Under twice the slowest drop. Raise it to at least "));
+      LOG(slowestDropMs * 2);
+      LOGLN(F(" ms"));
+      LOGLN(F("  !! (o<ms>), or this machine will fault on a pad that was"));
+      LOGLN(F("  !! only slow, and tell a paying customer it is broken."));
+    }
+  }
   LOG(F("  motor noise  : "));
   LOG(noisePulses);
   LOGLN(F(" pulses discarded"));
@@ -3825,6 +3853,8 @@ void loop()
     {
       motorOff();
       uint32_t took = millis() - dispenseStartMs;
+      if (took > slowestDropMs)
+        slowestDropMs = took;
 
       // Delivered. NOW take the money — this is the only line in the firmware
       // that spends a customer's credit.
