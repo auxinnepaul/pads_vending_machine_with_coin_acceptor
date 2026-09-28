@@ -336,6 +336,25 @@ const bool KEEP_CHANGE_AS_CREDIT = true;
 //  for you.
 const bool REMEMBER_CREDIT_ACROSS_POWER_LOSS = true;
 
+// What to do when a recovered balance already covers a whole pad.
+//
+//  true  = hold it and wait for a person. The machine says the pad is paid
+//          for and asks for a press.
+//  false = dispense it immediately on boot.
+//
+//  WHY HOLDING IS BETTER. Power comes back at three in the morning, the
+//  machine wakes up owing a pad, and drops one into an empty washroom. Nobody
+//  is there. It lies in the tray until whoever opens up finds it, or it walks.
+//  Dispensing to nobody is not honouring the debt, it is losing a pad on top
+//  of the money.
+//
+//  Held, the pad stays in the coil where it is safe until the next person
+//  touches the machine — a button press, or a coin, which equally means
+//  somebody is standing there. That is not the customer who paid either, but
+//  she was gone the moment the power went, and at least the pad reaches a
+//  person instead of a floor.
+const bool HOLD_RECOVERED_PAD = true;
+
 // ===========================================================================
 //  SECTION 4 — SENSOR AND RELAY POLARITY
 // ===========================================================================
@@ -943,7 +962,8 @@ uint16_t creditInFlash = 0;       // what we last successfully wrote
 
 uint16_t credit = 0; // shillings on the meter
 uint32_t lastCoinMs = 0;
-uint32_t prevCoinMs = 0; // the one before it, so the gap can be reported
+uint32_t prevCoinMs = 0;        // the one before it, so the gap can be reported
+bool holdForCollection = false; // a recovered pad, waiting for a person
 uint32_t creditTickMs = 0; // next countdown repaint, see ST_IDLE
 uint8_t idleMsgIdx = 0;    // which page of the idle prompt is showing
 uint32_t idleRotateMs = 0; // next idle repaint
@@ -1857,6 +1877,14 @@ void enterFault(const char *line2)
 void showIdle()
 {
   char l1[17], l2[17];
+
+  if (holdForCollection)
+  {
+    sayPaged("PAD IS PAID FOR", "PRESS THE BUTTON TO COLLECT IT", idleMsgIdx);
+    idleRotateMs = millis() + FAULT_ROTATE_MS;
+    return;
+  }
+
   if (credit > 0 && credit < PAD_PRICE)
   {
     snprintf(l1, sizeof(l1), "CREDIT KSH %u", credit);
@@ -2102,7 +2130,20 @@ void clearButtonService()
       (now - clearBtnDownMs) >= CLEAR_BTN_HOLD_MS)
   {
     clearBtnHandled = true;
-    attemptClear("the retry button", true);
+
+    // One button, two jobs, told apart by what the machine is doing. Faulted,
+    // it retries. Holding a recovered pad, it releases it.
+    if (holdForCollection && state == ST_IDLE)
+    {
+      holdForCollection = false;
+      LOGLN(F("Button pressed — releasing the pad that was paid for before"));
+      LOGLN(F("the power went. Dispensing now."));
+      beep(TONE_COIN_HZ, TONE_COIN_MS);
+    }
+    else
+    {
+      attemptClear("the retry button", true);
+    }
   }
 }
 
@@ -2581,8 +2622,10 @@ bool selfTest(bool verbose)
   LOGLN(F("[8b] STORED BALANCE"));
   if (!REMEMBER_CREDIT_ACROSS_POWER_LOSS)
   {
-    LOGLN(F("  OFF — nothing is written to flash. A power cut with money on"));
-    LOGLN(F("  the meter loses it silently. See SECTION 3."));
+    LOGLN(F("  OFF — the NVS store is never opened and nothing is written."));
+    LOGLN(F("  A power cut with money on the meter loses it silently, and"));
+    LOGLN(F("  there is no recovered pad to collect. Everything else in the"));
+    LOGLN(F("  machine behaves identically. See SECTION 3."));
   }
   else
   {
@@ -3295,9 +3338,14 @@ void setup()
   buzzerInit();
 
   // The meter balance is the only thing this firmware keeps in flash.
-  creditStoreOpen = prefs.begin("padvend", false);
-  creditPersistOk = creditStoreOpen;
-  if (!creditStoreOpen)
+  //  Not opened at all when the feature is off: a machine built without
+  //  persistence should not be touching the NVS partition for any reason.
+  if (REMEMBER_CREDIT_ACROSS_POWER_LOSS)
+  {
+    creditStoreOpen = prefs.begin("padvend", false);
+    creditPersistOk = creditStoreOpen;
+  }
+  if (REMEMBER_CREDIT_ACROSS_POWER_LOSS && !creditStoreOpen)
   {
     LOGLN(F("!! The credit store would not open. Two consequences, and the"));
     LOGLN(F("!! second is the one that matters:"));
@@ -3365,7 +3413,14 @@ void setup()
       LOG(F("RECOVERED KSH "));
       LOG(credit);
       LOGLN(F(" left on the meter when the power went."));
-      if (credit >= PAD_PRICE)
+      if (credit >= PAD_PRICE && HOLD_RECOVERED_PAD)
+      {
+        holdForCollection = true;
+        LOGLN(F("  That is a full pad, already paid for. HOLDING it until"));
+        LOGLN(F("  somebody presses the button or puts a coin in, rather than"));
+        LOGLN(F("  dropping it into an empty room where it is simply lost."));
+      }
+      else if (credit >= PAD_PRICE)
         LOGLN(F("  That is a full pad, already paid for. Vending it now."));
       else
       {
@@ -3589,6 +3644,15 @@ void loop()
       // IDLE, DISPENSING or DELIVERED: the machine can honour this, so bank
       // it. Mid-vend is fine — those states end in IDLE within a second or
       // two, and the credit simply buys the next pad.
+      // A coin means somebody is standing at the machine, which is the only
+      // thing a held pad was ever waiting for.
+      if (holdForCollection)
+      {
+        holdForCollection = false;
+        LOGLN(F("Somebody is here — releasing the pad held from before the"));
+        LOGLN(F("power cut as well."));
+      }
+
       if (bankCoin(coin))
         beep(TONE_COIN_HZ, TONE_COIN_MS);
       else
@@ -3747,7 +3811,9 @@ void loop()
     //  place. Charge on delivery and a jam, an empty coil or a missed beam
     //  all leave the credit sitting on the meter where the customer can see
     //  it, instead of quietly consuming it for a pad that never arrived.
-    if (credit >= PAD_PRICE)
+    //  A pad recovered from a power cut waits for a person. Everything else
+    //  vends straight away: somebody is standing there, they just paid.
+    if (credit >= PAD_PRICE && !holdForCollection)
       startVend("credit met");
     break;
   }
@@ -3950,13 +4016,20 @@ void loop()
   }
 
   // ---- Cycle the idle prompt so the whole of it gets read ----
-  if (state == ST_IDLE && credit == 0 && backlightOn && lcdOk &&
-      reached(now, idleRotateMs))
+  if (state == ST_IDLE && backlightOn && lcdOk && reached(now, idleRotateMs) &&
+      (credit == 0 || holdForCollection))
   {
     idleRotateMs = now + FAULT_ROTATE_MS;
-    char l1[17];
-    snprintf(l1, sizeof(l1), "PAD = KSH %u", PAD_PRICE);
-    sayPaged(l1, acceptedCoins, idleMsgIdx);
+    if (holdForCollection)
+    {
+      sayPaged("PAD IS PAID FOR", "PRESS THE BUTTON TO COLLECT IT", idleMsgIdx);
+    }
+    else
+    {
+      char l1[17];
+      snprintf(l1, sizeof(l1), "PAD = KSH %u", PAD_PRICE);
+      sayPaged(l1, acceptedCoins, idleMsgIdx);
+    }
   }
 
   // ---- Rebuild the display periodically, whatever happened to it ----

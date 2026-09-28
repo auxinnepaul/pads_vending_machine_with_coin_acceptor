@@ -762,6 +762,25 @@ RECOVERED KSH 5 left on the meter when the power went.
   from this boot rather than sitting here indefinitely.
 ```
 
+**A recovered pad waits to be collected; it does not just drop.** Power comes
+back at three in the morning, the machine wakes up owing a pad, and without
+this it drops one into an empty washroom. Nobody is there. It lies in the tray
+until whoever opens up finds it, or it walks — that is losing a pad on top of
+the money, not honouring the debt.
+
+Held, the pad stays in the coil where it is safe:
+
+```
+PAD IS PAID FOR
+PRESS THE BUTTON TO COLLECT IT
+```
+
+Either a **button press** or a **coin** releases it — both mean somebody is
+standing there, which is the only thing it was waiting for. That person is not
+the customer who paid, but she was gone the moment the power went, and at least
+the pad reaches a person. `HOLD_RECOVERED_PAD = false` restores the old
+dispense-on-boot behaviour.
+
 **The countdown restarts from boot rather than resuming.** That is the detail
 that makes this safe. A short cut protects the customer who is still standing
 there. A long one must not leave a stranger's balance on the screen all night
@@ -771,7 +790,21 @@ for whoever opens up in the morning — so a restored balance expires
 If the restored balance already covers a whole pad, the machine vends it on
 boot. That is a pad already paid for.
 
-Turn it off with `REMEMBER_CREDIT_ACROSS_POWER_LOSS` in SECTION 3.
+### Building a machine without it
+
+`REMEMBER_CREDIT_ACROSS_POWER_LOSS = false` in SECTION 3 removes the whole
+feature for a client who does not want flash writes. The NVS store is then
+**never opened** — not opened and unused, genuinely never touched — nothing is
+written, and there is no recovered pad to collect.
+
+Everything else behaves identically. The only difference is that a power cut
+with money on the meter loses it silently, which the self-test states plainly
+every boot so it can never be forgotten:
+
+```
+[8b] STORED BALANCE
+  OFF — the NVS store is never opened and nothing is written.
+```
 
 **What it costs.** One write per coin, plus one on the vend. With KSh 5 coins
 and a KSh 20 pad that is **five writes for a single sale** — the smallest coin
