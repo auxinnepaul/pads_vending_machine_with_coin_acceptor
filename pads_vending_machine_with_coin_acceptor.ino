@@ -2619,8 +2619,20 @@ bool selfTest(bool verbose)
     LOGLN(F(" needs a 10k pull-UP to 3V3,"));
     LOGLN(F("  not a pull-down. The pin floats until setup() runs; held low"));
     LOGLN(F("  through that window the relay energises, the NC contact opens,"));
-    LOGLN(F("  and the slot is live every time you reset. Watch for a click"));
-    LOGLN(F("  through one reset with the acceptor connected before you ship."));
+    LOGLN(F("  and the slot is live every time you reset."));
+    LOGLN();
+    LOGLN(F("  AN ACTIVE-LOW MODULE IS NOT THE SAME PROBLEM AS AN ACTIVE-HIGH"));
+    LOGLN(F("  ONE, and the motor relay working proves nothing about this."));
+    LOGLN(F("    active HIGH: pin -> resistor -> LED -> GND. 3.3 V switches it"));
+    LOGLN(F("                 ON easily, and LOW switches it fully off."));
+    LOGLN(F("    active LOW : 5 V -> LED -> resistor -> pin. Pulling LOW"));
+    LOGLN(F("                 switches it ON fine, but turning it OFF needs"));
+    LOGLN(F("                 the pin near the module's 5 V. An ESP32 HIGH is"));
+    LOGLN(F("                 3.3 V, leaving ~1.7 V across the LED, which is"));
+    LOGLN(F("                 often enough to keep it conducting."));
+    LOGLN(F("  Symptom: it energises on demand and then never releases."));
+    LOGLN(F("  Fix: feed the module's logic VCC from 3V3 (JD-VCC jumper), or"));
+    LOGLN(F("  drive it through a small NPN and set ACTIVE_HIGH true."));
   }
   LOG(F("  contact     : "));
   if (INHIBIT_CONTACT_IS_NC)
