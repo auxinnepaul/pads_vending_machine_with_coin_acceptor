@@ -234,7 +234,7 @@ const uint8_t PIN_IR = 27;
 const uint8_t PIN_BUZZER = 25;
 const uint8_t PIN_SDA = 21;
 const uint8_t PIN_SCL = 22;
-const uint8_t PIN_INHIBIT = 4; // relay 2 -> HX-916 2-pin inhibit port
+const uint8_t PIN_INHIBIT = 19; // relay 2 -> HX-916 2-pin inhibit port
 const uint8_t PIN_CLEAR = 23;   // jam-clear button to GND (INPUT_PULLUP)
 // On 13 rather than 33 purely because 13 lands next to the terminal block on
 // this build. Both are equally valid: plain GPIOs, no strapping, no flash, and
@@ -428,7 +428,7 @@ const bool INHIBIT_CONTACT_IS_NC = true;
 //  relay release, you have proved the module needs more than 3.3 V to turn
 //  off, and the proper fix is to feed its logic VCC from 3V3 (JD-VCC jumper)
 //  or drive it through a small NPN.
-const bool INHIBIT_PIN_OPEN_DRAIN = false;
+const bool INHIBIT_PIN_OPEN_DRAIN = true; // DIAGNOSTIC — put back to false
 
 // --- PAD STOCK SWITCH ------------------------------------------------------
 // A mechanical limit switch that tells the machine whether there are pads left

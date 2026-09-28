@@ -145,6 +145,74 @@ which one it thinks you used.
 Drive it from a **dry relay contact, never a GPIO** — on some HX-916 units
 that pin sits at 12 V.
 
+### An ESP32 cannot turn off a 5 V active-LOW relay module
+
+**Confirmed on this bench with the bare Blink example** — GPIO 19 toggling
+HIGH/LOW every second, nothing else running, and the relay never moved. A
+jumper from **5 V** releases it; a jumper from the ESP32's **3V3** does not.
+
+This is not a firmware problem and no firmware setting fixes it.
+
+**Why, and why the motor relay working proves nothing about it:**
+
+```
+active HIGH  (the motor relay — works fine on 3.3 V)
+    pin ──[ R ]──▶|── GND
+    3.3 V switches it ON. LOW switches it fully OFF.
+
+active LOW   (the inhibit relay — cannot be turned off)
+    5 V ──▶|──[ R ]── pin
+    Pulling LOW switches it ON. Turning it OFF needs the pin near 5 V.
+    An ESP32 HIGH is 3.3 V, leaving ~1.7 V across the LED — still enough
+    to keep it conducting. It energises and never releases.
+```
+
+Two circuits, two different failure modes. The working one was never evidence
+about the broken one.
+
+**Multi-channel boards often dodge this** with a `JD-VCC` jumper that separates
+the logic supply from the coil supply — put logic on 3V3, coil on 5 V, and a
+3.3 V HIGH matches VCC exactly. **Single-channel boards usually have no such
+jumper**, which is the case here.
+
+### The fix: one NPN transistor
+
+Works on any module, jumper or not, and costs about ten shillings.
+
+```
+                          +5 V (module VCC)
+                            │
+                        (module's own
+                         pull-up + opto)
+                            │
+  GPIO 19 ──[ 1 kΩ ]──┐     │
+                      │     │
+                    B ├─────┤ C   ← relay module IN
+            NPN   ┌───┤     │
+         BC547 /  │   │     │
+         2N2222 / │ E └─────┘
+         S8050    │
+                  │
+       [ 10 kΩ ]──┴── GND        ← pull-down, GPIO 19 to GND
+```
+
+- **Pin HIGH** → base current → transistor saturates → pulls the module's
+  input to ~0.2 V → **relay ON**
+- **Pin LOW or floating** → transistor off → the module's own pull-up takes
+  its input to **5 V** → **relay OFF**
+
+**The transistor inverts the logic, so change one flag:**
+
+```c
+const bool INHIBIT_RELAY_ACTIVE_HIGH = true;   // was false
+```
+
+**And the pull resistor flips too — this is now a pull-DOWN, not a pull-up.**
+GPIO 19 to GND through 10 kΩ. That is the same as the motor relay, and it is
+better than what came before: a floating pin at boot now leaves the transistor
+off, the relay released, the NC contact closed, and **the coin slot inhibited**.
+Fail-safe by default instead of by careful wiring.
+
 ### If the inhibit relay will not release
 
 Symptom: the console says `Coin acceptor INHIBITED` but the relay stays
@@ -302,6 +370,7 @@ parallel make 94 nF.
 | Part | Qty | Goes | Notes |
 |---|---|---|---|
 | **1N5408** (3 A) | 1 | Flyback across the **motor terminals** | **Band to POSITIVE.** Backwards is a dead short |
+| **NPN transistor** — BC547, 2N2222 or S8050 | 1 | Driving the **inhibit relay** | An ESP32's 3.3 V cannot turn off a 5 V active-low module. Buy a few, they cost nothing |
 | 1N4007 (1 A) | — | Only for a small gearmotor | Marginal on a wiper motor |
 | SMBJ15A or P6KE15A | 1 | Optional TVS across the acceptor's 12 V | Clamps what the capacitors miss |
 
@@ -309,7 +378,8 @@ parallel make 94 nF.
 
 | Value | Qty | Goes |
 |---|---|---|
-| 10 kΩ | 2 | Pull-down on the motor relay pin, pull-up on the inhibit relay pin |
+| 10 kΩ | 2 | Pull-**down** on the motor relay pin, and pull-**down** on the inhibit relay pin once the NPN is fitted |
+| 1 kΩ | 1 | Base resistor for that NPN |
 | 4.7 kΩ | 2 | I2C pull-ups, if you remove the backpack's 5 V ones |
 | 1 kΩ | 1 | Coin-line filter, only if needed |
 

@@ -47,6 +47,41 @@ hardware. What remains is **mechanical and electrical**, not code.
 
 ---
 
+## 2026-09-28 — The inhibit relay: an ESP32 cannot turn off a 5 V active-low module
+
+**Settled, with the bare Blink example.** GPIO 19 toggling HIGH/LOW every
+second, nothing else running, and the relay never moved. A jumper from **5 V**
+releases it; a jumper from the ESP32's **3V3** does not.
+
+Not a firmware problem. No firmware setting fixes it.
+
+**Why the motor relay working was never evidence.** Two different circuits:
+
+- **active HIGH** (motor): `pin -[R]-|>- GND`. 3.3 V switches it on, LOW off.
+  A 3.3 V MCU drives it perfectly.
+- **active LOW** (inhibit): `5V -|>-[R]- pin`. LOW switches it on. Turning it
+  **off** needs the pin near 5 V; 3.3 V leaves ~1.7 V across the LED, enough
+  to keep conducting. It energises and never releases.
+
+I had this right first, retracted it when the motor-relay evidence was raised,
+and was wrong to. The evidence was real but did not apply.
+
+**Multi-channel boards dodge it** with a `JD-VCC` jumper separating logic from
+coil supply. **Single-channel boards have no such jumper** — the case here.
+
+**Fix: one NPN.** Pin HIGH → transistor on → pulls the module input to 0.2 V →
+relay on. Pin LOW or floating → transistor off → module's own pull-up takes it
+to 5 V → relay off.
+
+Two config consequences when it is fitted:
+- `INHIBIT_RELAY_ACTIVE_HIGH = true` — the transistor inverts the logic
+- The pull resistor becomes a pull-**DOWN**, and the boot window becomes
+  fail-safe by default rather than by careful wiring
+
+**Verified.** ⏳ Transistor not yet fitted. Config unchanged until it is.
+
+---
+
 ## 2026-09-28 — The soak stopped after every first cycle
 
 **The bug.** `T25` ran one cycle and stopped:
