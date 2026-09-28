@@ -1110,6 +1110,7 @@ void repaintForState();
 void wakeDisplay();
 void sleepDisplay();
 void soakTest(uint16_t cycles);
+bool chuteClear();
 bool ensureCreditStore();
 
 // Debounced pad stock switch
@@ -2057,15 +2058,7 @@ void attemptClear(const char *who, bool fromButton)
 
   // Let the beam settle before believing it. Clearing a fault while a pad is
   // still wedged just faults again on the next coin, after taking the money.
-  uint32_t t0 = millis();
-  while (millis() - t0 < IR_SETTLE_MS)
-  {
-    padSeen();
-    buzzerService();
-    delay(1);
-  }
-
-  if (irStable)
+  if (!chuteClear())
   {
     beep(TONE_REJECT_HZ, TONE_REJECT_MS);
     sayAllPages("CHUTE BLOCKED",
@@ -3026,21 +3019,11 @@ void soakTest(uint16_t cycles)
     }
 
     // Never start over a blocked chute, same rule as a paid vend.
-    uint32_t t0 = millis();
-    bool clear = true;
-    while (millis() - t0 < IR_SETTLE_MS)
-    {
-      if (padSeen())
-      {
-        clear = false;
-        break;
-      }
-      buzzerService();
-      delay(1);
-    }
-    if (!clear)
+    if (!chuteClear())
     {
       LOGLN(F("  Chute is blocked. Clear it and start again. Stopping."));
+      LOGLN(F("  If the last pad has already gone, the sensor is still seeing"));
+      LOGLN(F("  something — check it with  i  before soaking again."));
       break;
     }
 
@@ -3173,26 +3156,43 @@ void soakTest(uint16_t cycles)
   repaintForState();
 }
 
+// Watch the beam for IR_SETTLE_MS and say whether the chute is clear.
+//
+//  IT POLLS THE WHOLE WINDOW AND ONLY JUDGES AT THE END, which is not fussiness
+//  — it is the fix for a real bug.
+//
+//  padSeen() is a debouncer, so it carries state from whenever it was last
+//  called. Immediately after a delivery that state is BLOCKED: the pad tripped
+//  the beam, and nothing has called padSeen() since to notice it has gone. A
+//  check that bails out on the FIRST reading therefore reports a blocked chute
+//  on a chute that is empty.
+//
+//  That is what stopped the soak dead after every first cycle. It survived in
+//  startVend() only by luck: ST_DELIVERED polls padSeen() on every pass for
+//  2.5 seconds, so the debouncer was always fresh by the time a vend started.
+//  Nothing polled it during the soak's gap between cycles.
+//
+//  Polling the full window lets the debouncer catch up before the verdict, so
+//  the answer reflects the chute rather than the last thing that happened.
+bool chuteClear()
+{
+  uint32_t t0 = millis();
+  while (millis() - t0 < IR_SETTLE_MS)
+  {
+    padSeen();
+    buzzerService();
+    delay(1); // 1 ms is well inside IR_DEBOUNCE_MS, so nothing is missed
+  }
+  return !irStable;
+}
+
 // Returns false if it refused to start. The caller must not take the money
 // until this has returned true.
 bool startVend(const char *why)
 {
-  // Refuse to run the motor blind. If the beam already reads "pad", the
-  // sensor is mis-wired, mis-aimed, or something is stuck in the chute.
-  padSeen();
-  uint32_t t0 = millis();
-  bool clear = true;
-  while (millis() - t0 < IR_SETTLE_MS)
-  {
-    if (padSeen())
-    {
-      clear = false;
-      break;
-    }
-    buzzerService();
-    delay(1); // yield: 1 ms is well inside IR_DEBOUNCE_MS, so nothing is missed
-  }
-  if (!clear)
+  // Refuse to run the motor blind. If the beam still reads "pad", the sensor
+  // is mis-wired, mis-aimed, or something is stuck in the chute.
+  if (!chuteClear())
   {
     LOGLN(F("Refusing to start: the beam already reads BLOCKED."));
     enterFault("CHECK SENSOR");

@@ -47,6 +47,36 @@ hardware. What remains is **mechanical and electrical**, not code.
 
 ---
 
+## 2026-09-28 — The soak stopped after every first cycle
+
+**The bug.** `T25` ran one cycle and stopped:
+
+```
+  #1  delivered in 1127 ms
+  Chute is blocked. Clear it and start again. Stopping.
+```
+
+Reproducible on every run, whatever the cycle count.
+
+**Cause.** `padSeen()` is a debouncer and carries state from whenever it was
+last called. Immediately after a delivery that state is BLOCKED — the pad
+tripped the beam and nothing has called it since to notice the pad has gone.
+The soak's beam check bailed out on the **first** reading, so it read that
+stale value and declared a blocked chute on a chute that was empty.
+
+**Why it never showed in a paid vend.** Luck. `ST_DELIVERED` polls `padSeen()`
+on every pass for 2.5 seconds, so the debouncer was always fresh by the time
+`startVend()` ran. Nothing polled it during the soak's gap between cycles.
+
+**Fix.** One shared `chuteClear()` that polls the **whole** settle window and
+only judges at the end, so the debouncer catches up before the verdict.
+`startVend()`, `soakTest()` and `attemptClear()` all use it — the first had the
+same latent bug and was surviving on that accident.
+
+**Verified.** ⏳ Compiles. Needs a re-run of `T5` on hardware.
+
+---
+
 ## 2026-09-28 — Paperwork, soak command, silent boot
 
 **What changed.** Added `T<n>`, a soak that runs *n* vends back to back, times
