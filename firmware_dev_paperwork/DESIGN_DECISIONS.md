@@ -179,6 +179,41 @@ forgives the count. Any successful delivery restores the budget.
 **Why.** A jam that survives three tries will not clear itself, and carrying on
 just works the coil against whatever is stuck.
 
+### 10b. A machine out of retries stays inhibited, and that is not configurable
+
+**Decision.** When the retries are spent the coin slot stays shut. There is no
+setting to let it keep accepting coins.
+
+**Why not a client preference.** Because the machine genuinely cannot tell
+these three apart — the beam is its only evidence and all three look identical
+from inside:
+
+1. a pad wedged in the coil
+2. the coil empty, if no stock switch is fitted
+3. **the IR sensor blind** — pads may be dropping perfectly and the machine
+   simply cannot see them
+
+**A machine that cannot tell whether pads are coming out must not keep taking
+money for them.** That is the whole principle the payment model rests on, and
+a flag that turns it off is not a preference — it is an option to build the
+one failure this design exists to prevent, and at scale: every customer who
+walks up, for as long as nobody notices.
+
+**And the cost of being wrong is asymmetric.** If the sensor is blind and pads
+really are dropping, the customer who paid already has her pad; refusing the
+next coin costs a **sale**. If it is a real jam and the slot stayed open, every
+coin after it is money taken for nothing. Same asymmetry as the stock switch
+polarity: a failure should cost a sale, never a customer's money.
+
+**What the code does say now.** The screen says `JAMMED` because it is the
+short word that fits sixteen columns, but the console lists all three causes
+and says plainly that the sensor is one of them — *check it with `i` before
+assuming the mechanism is at fault*. The machine was over-claiming a diagnosis
+it had not earned.
+
+The refusal is also rate-limited to once every 15 seconds. She will keep
+pressing, and forty identical lines bury whatever comes next in the log.
+
 ### 11. A refill clears a latched jam
 
 **Decision.** The stock switch going away and coming back is treated as a

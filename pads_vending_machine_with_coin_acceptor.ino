@@ -1130,6 +1130,7 @@ uint32_t clearBtnChangedMs = 0;
 uint32_t clearBtnDownMs = 0;
 bool clearBtnHandled = false;
 uint8_t buttonRetries = 0;     // consecutive button clears with no pad delivered
+uint32_t lastRefusalMs = 0;    // rate-limit the out-of-retries message
 bool serviceCycleSeen = false; // stock switch went EMPTY during a fault
 char faultLine2[17] = "";
 uint8_t faultMsgIdx = 0;
@@ -2052,11 +2053,35 @@ void attemptClear(const char *who, bool fromButton)
   {
     say("SORRY - JAMMED", SERVICE_CONTACT);
     beep(TONE_REJECT_HZ, TONE_REJECT_MS);
-    LOG(F("Refusing: "));
-    LOG(buttonRetries);
-    LOGLN(F(" retries already and still no pad."));
-    LOGLN(F("This needs opening up. The console  x  still works."));
     faultRotateMs = millis() + MESSAGE_HOLD_MS;
+
+    // She will keep pressing, because the screen is the only thing telling
+    // her to stop and it may not be wired. Say it once properly, then stay
+    // quiet — a log that repeats the same line forty times buries whatever
+    // comes next.
+    if (lastRefusalMs == 0 || sinceMs(millis(), lastRefusalMs) > 15000)
+    {
+      lastRefusalMs = millis();
+      LOG(F("Refusing: "));
+      LOG(buttonRetries);
+      LOGLN(F(" retries already and still no pad."));
+      LOGLN(F("This needs opening up. The console  x  still works."));
+      LOGLN();
+
+      //  BE HONEST ABOUT WHAT IS AND IS NOT KNOWN. The screen says JAMMED
+      //  because that is the short word that fits, but the machine cannot
+      //  actually tell these apart — the beam is its only evidence, and all
+      //  three look identical from here.
+      LOGLN(F("*** THREE THINGS LOOK THE SAME FROM IN HERE. Check all three:"));
+      LOGLN(F("***   1. a pad wedged in the coil"));
+      LOGLN(F("***   2. the coil empty, if the stock switch is not fitted"));
+      LOGLN(F("***   3. THE IR SENSOR BLIND — pads may be dropping perfectly"));
+      LOGLN(F("***      and the machine simply cannot see them. Check it with"));
+      LOGLN(F("***      i  before assuming the mechanism is at fault."));
+      LOGLN(F("*** Coins stay inhibited either way, because a machine that"));
+      LOGLN(F("*** cannot tell whether pads are coming out must not keep"));
+      LOGLN(F("*** taking money for them."));
+    }
     return;
   }
 
@@ -3317,6 +3342,7 @@ void handleCommand(char *s)
     // Staff override: always allowed, and it forgives the retry ceiling,
     // because somebody with a console has presumably just looked inside.
     buttonRetries = 0;
+    lastRefusalMs = 0;
     attemptClear("serial console", false);
     break;
 
@@ -3960,6 +3986,7 @@ void loop()
       LOGLN(F("Stock cycled away and back while faulted — somebody has been"));
       LOGLN(F("inside. Treating it as a service visit and returning to work."));
       buttonRetries = 0; // whoever refilled it earned a fresh budget
+      lastRefusalMs = 0;
       attemptClear("a refill", false);
     }
   }
@@ -4094,6 +4121,7 @@ void loop()
 
       vendCount++;
       buttonRetries = 0; // it worked, so the retry budget is whole again
+      lastRefusalMs = 0;
       // If there is change, name the amount rather than just saying some
       // exists. She is about to be asked to add to it.
       char l2[17];
