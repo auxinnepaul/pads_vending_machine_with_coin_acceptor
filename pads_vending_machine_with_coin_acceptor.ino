@@ -561,16 +561,26 @@ uint32_t COIN_GAP_MS = 250;
 //              phantom fault in a washroom is not.
 //  CONSOLE     o<ms>   e.g.  o5000
 //
-//  MEASURED ON THIS MACHINE. Most drops land between 900 and 1500 ms, but the
-//  distribution has a long tail: 930, 1006, 1109, 1127, 1191, 1401 — and then
-//  3503. That outlier is the number that matters, because the machine has to
-//  survive its worst day, not its average one. 3000 threw JAMMED faults on a
-//  working coil; 5000 left only 43% margin over 3503. 7000 is twice the
-//  slowest seen.
+//  7000 IS A PLACEHOLDER. It is not measured and must not be treated as if it
+//  were.
 //
-//  DO NOT TREAT THIS AS SETTLED. Status prints the slowest drop this session
-//  and warns when the timeout falls under twice it, so the machine tells you
-//  when it has outgrown the number instead of waiting for you to notice.
+//  Every timing in the log so far came from a finger being waved at the IR
+//  sensor to mimic a pad, because the chute and panel do not exist yet. Those
+//  numbers measure how fast somebody moves their hand. They say nothing about
+//  how long a pad takes to fall, and the 3503 ms "slow drop" that this value
+//  was derived from was a slow finger.
+//
+//  7000 is deliberately generous so bench work is not interrupted by faults
+//  that mean nothing. It errs the safe way: too long only wastes a few
+//  seconds on a real jam, while too short tells a paying customer the machine
+//  is broken when it is not.
+//
+//  SET IT PROPERLY once pads fall down a real chute:
+//    1. Load the coil and run twenty or thirty vends.
+//    2. Read  slowest drop  from  s  — the firmware tracks it for you.
+//    3. Set this to about twice that, with  o<ms>, then write it in here.
+//  Status warns whenever the timeout drops under twice the slowest drop it
+//  has actually seen, so the machine will tell you when this number is wrong.
 uint32_t DISPENSE_TIMEOUT_MS = 7000;
 
 // ---------------------------------------------------------------------------
