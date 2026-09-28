@@ -471,15 +471,25 @@ takes the command after a short pause in typing.
 
 ### Logging in the field
 
-`SERIAL_LOG_DEFAULT` in SECTION 7 silences the routine chatter — every coin,
-vend, warning and fault — for an installed machine. Set it `false` before you
-flash a unit that is going out.
+Two switches in SECTION 7, because there are two different kinds of output:
 
-It does not make the machine mute. The boot banner and the **whole self-test
-still print, always**, so a reset during a service visit still tells you
-everything. And **every typed command still answers in full**: plug a laptop in,
-press `s`, and you get the complete status whatever the switch is set to. `L`
-turns the running commentary back on for as long as you want it.
+| Setting | Controls | Set `false` to |
+|---|---|---|
+| `SERIAL_LOG_DEFAULT` | routine chatter — every coin, vend, warning, fault | stop the running commentary |
+| `SERIAL_LOG_BOOT` | the banner and the nine-part self-test | boot completely silently |
+
+Set **both** `false` for a machine that says nothing unless spoken to.
+
+**Nothing is weakened by either.** The self-test still runs and still gates the
+machine with `SERIAL_LOG_BOOT` off — it just does not narrate. And every typed
+command still answers in full whatever both are set to: plug in a laptop, press
+`s`, and you get the complete status. `d` reprints the whole self-test, `L`
+turns the commentary back on.
+
+**A failing self-test still shouts.** If the check fails on a quiet boot it is
+run again with the console forced on, so the reason reaches you. Silent when
+healthy, loud when broken — a machine that refuses to work and will not say why
+is worse than one that chatters.
 
 **Console changes are not saved.** The console is for finding the right number;
 once you have it, write it into the CONFIG sections at the top of the `.ino`

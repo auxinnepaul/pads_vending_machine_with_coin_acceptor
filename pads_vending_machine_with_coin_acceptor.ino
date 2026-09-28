@@ -814,6 +814,27 @@ const uint32_t HEARTBEAT_MS = 10000;
 //         Toggle it live with  L  if you want the chatter back for a minute.
 const bool SERIAL_LOG_DEFAULT = true;
 
+// Does the BOOT output print — the banner and the nine-part self-test?
+//
+//  true  = yes. What you want on the bench and during commissioning.
+//  false = silent boot. The self-test still RUNS and still gates the machine
+//          exactly as before; it just does not narrate. Nothing is skipped
+//          and nothing is weakened.
+//
+//  SERIAL_LOG_DEFAULT alone does not give you this. The banner and self-test
+//  are deliberately forced on in setup() regardless of it, so a field machine
+//  set quiet was still printing about a second of text at every power-up.
+//  This is the switch for that.
+//
+//  A FAILING SELF-TEST STILL SHOUTS. If the check fails with this off, it is
+//  run again with logging forced on so the reason reaches the console. Silent
+//  when healthy, loud when broken — a machine that refuses to work and will
+//  not say why is worse than one that chatters.
+//
+//  Either way  d  still prints the whole thing on demand, because a typed
+//  command always answers.
+const bool SERIAL_LOG_BOOT = true;
+
 // Refuse to leave setup() if the self-test found something fatal. The machine
 // shows the fault on the LCD and waits rather than pretending to work.
 const bool HALT_ON_SELFTEST_FAIL = true;
@@ -3572,10 +3593,8 @@ void setup()
   delay(300);
   bootMs = millis();
 
-  // The banner and the self-test always print, whatever SECTION 7 says. A
-  // reset in the field has to tell a service visit what it needs to know.
   logEvents = SERIAL_LOG_DEFAULT;
-  logOn = true;
+  logOn = SERIAL_LOG_BOOT;
 
   LOGLN();
   rule();
@@ -3633,6 +3652,18 @@ void setup()
   Wire.setClock(100000);
 
   selfTestPassed = selfTest(true);
+
+  // Silent when healthy, loud when broken. If the boot was quiet and the test
+  // failed, run it again with the console on — a machine that refuses to work
+  // and will not say why is worse than one that chatters.
+  if (!selfTestPassed && !logOn)
+  {
+    logOn = true;
+    LOGLN();
+    LOGLN(F("SELF-TEST FAILED ON A QUIET BOOT. Repeating it with the console"));
+    LOGLN(F("on, because you need to see this one."));
+    selfTestPassed = selfTest(true);
+  }
 
   if (lcdOk)
   {
@@ -3722,6 +3753,7 @@ void setup()
     LOGLN(F("running commentary, ? for the command list."));
   }
   rule();
+  logOn = logEvents; // whatever the boot setting was, run at the field level
 }
 
 // ===========================================================================
