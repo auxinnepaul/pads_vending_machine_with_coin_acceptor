@@ -3845,8 +3845,9 @@ void loop()
         if (perSec > 20)
         {
           LOGLN(F("  A steady rate like that is brush arcing, not the switching"));
-          LOGLN(F("  spike, so a flyback diode alone will not fix it. Fit"));
-          LOGLN(F("  100 nF across the motor terminals — see README."));
+          LOGLN(F("  spike, so a flyback diode alone will not fix it. Fit a"));
+          LOGLN(F("  ceramic across the motor terminals — anything from 10 to"));
+          LOGLN(F("  100 nF helps, bigger cuts more. See README."));
         }
       }
       if (noisePulses == junk)

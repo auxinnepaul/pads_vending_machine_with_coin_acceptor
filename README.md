@@ -290,11 +290,25 @@ and every arc is a small radio transmitter. The standard suppression network:
               └──── motor case ──────┘
 ```
 
-- **100 nF across the terminals** is the one that matters most. Fit it first.
-- **100 nF from each terminal to the motor case**, if the case is metal and you
-  can get a solder tag or clamp onto it.
-- Use **ceramic** capacitors, and put them **at the motor**, not at the relay.
-  The wire between is the antenna you are trying to silence.
+- **Across the terminals** is the one that matters most. Fit it first.
+  **Anything from 10 nF to 100 nF works** — this is a standard motor
+  suppression value and the exact figure is not critical. Bigger cuts more:
+  47 nF has roughly twice the impedance of 100 nF at a given frequency, so it
+  suppresses about half as hard, which is still most of the benefit. **Two 47 nF
+  in parallel make 94 nF** if you have a pair and want the rest of it.
+- **10 nF from each terminal to the motor case**, if the case is metal and you
+  can get a solder tag or clamp onto it. Lower value here on purpose.
+- Use **ceramic** capacitors, not electrolytic — electrolytics are polarised
+  and far too slow for this. **50 V rating or better**, because the coil spikes
+  well above 12 V.
+- Put them **at the motor**, not at the relay. The wire between is the antenna
+  you are trying to silence.
+
+**If the motor cap alone does not get you to zero**, the complementary fix is
+at the other end: filter the coin input. A series 1 kΩ from the acceptor into
+GPIO 18 with 10 nF to ground gives a 10 µs time constant — far below the
+50–105 ms between real coin pulses, so it removes the fast induced edges
+without touching anything real.
 
 Wiper motors are often sold with this network already fitted inside the
 housing — worth checking before you add your own.
