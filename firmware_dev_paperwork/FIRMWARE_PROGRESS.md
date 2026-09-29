@@ -11,25 +11,18 @@ compiles is not a thing that works.
 
 # ▶ RESUME HERE
 
-**State as of 2026-09-28.**
+**State as of 2026-09-29.**
 
-### ⛔ Blocker — the board stopped responding (2026-09-28, later)
+### ⛔ Do not connect an ESP32 until step 1 below is built
 
-**The ESP32 on COM3 is electrically silent.** Everything below about coins is
-still true of the firmware; none of it can be re-tested until the board talks.
-
-This is **not** the toolchain. A full disk had been making `esptool` fail while
-unpacking its own runtime, which masked the real fault. With the disk cleared
-(16.3 GB free) `esptool` runs correctly and reports `No serial data received`.
-
-**Cause found (measured):** inductive kickback from the coin acceptor's
-solenoid puts 24–36 V (true peak likely >100 V) onto the COIN signal line that
-feeds a 3.6 V-max GPIO. **Three boards lost.** Do not connect another ESP32
-until the coin line is optocoupled — see the dated section below.
-
+**Three boards lost, cause measured.** Connecting or disconnecting the coin
+acceptor puts 24–36 V on the COIN line (a multimeter reading, so the true peak
+is higher) that feeds a GPIO rated for 3.6 V. Inductive kickback from the
+acceptor's solenoid. The line idles at 0 V, which is why "measure it first"
+never caught it. Full account in the dated sections below.
 
 The firmware is functionally complete and every coin path is verified on real
-hardware. What remains is **mechanical and electrical**, not code.
+hardware. What remains is **electrical and mechanical**, not code.
 
 ### Verified on hardware ✅
 
@@ -40,25 +33,46 @@ hardware. What remains is **mechanical and electrical**, not code.
 - Meter survives a power cut; recovered pad is held and released by button or coin
 - Jam retry, the three-attempt cap, and the customer button
 - Coin-noise muting (the machine no longer spends induced pulses)
+- Shorting the inhibit port by hand inhibits the acceptor, so NC is fail-safe
 
-### Pending ⏳ — all of it physical
+*All of the above was verified with the coin line wired directly to GPIO 18.
+The PC817 changes that path, so the coin tests must be repeated after step 3.*
+
+### Pending ⏳
 
 | | Blocked on |
 |---|---|
-| **Real drop times** | No chute or panel. Every timing so far is a finger at the IR sensor, which measures how fast a hand moves |
-| **`DISPENSE_TIMEOUT_MS`** | Currently **7000 ms placeholder**. Run `T25` once pads fall down a real chute and set twice the slowest |
+| **Coin-line protection** | Parts. PC817 stage, TVS and bulk caps at the acceptor. README → *Protection — the coin line* |
+| **Inhibit relay** | Decided: active-HIGH module matching the motor relay, NC contact, GPIO 19 pull-**down**, `INHIBIT_RELAY_ACTIVE_HIGH = true`. Not yet fitted |
+| **Stock switch firmware** | 173 lines in the working tree, **uncommitted**. Compiles clean; never flashed |
+| **Motor noise → zero** | Down from 70/s to 5–46/s. 47 nF (in hand) across the motor terminals, 1N5408 flyback |
+| **LCD** | Not wired. I2C scan finds nothing. 5 V backpack pull-ups need handling |
+| **Real drop times** | No chute or panel. Every timing so far is a finger at the IR sensor |
+| **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
-| **Motor noise → zero** | Down from 70/s to 5–46/s. Needs 100 nF across the motor terminals |
-| **Inhibit relay polarity** | Run `n0` / `n1` and set `INHIBIT_RELAY_ACTIVE_HIGH` from what the relay does |
-| **LCD** | Not wired. I2C scan finds nothing |
 
 ### Next session should
 
-1. Wire the LCD — everything the customer sees is currently invisible
-2. `n0` / `n1`, settle the relay polarity, fix the pull-up/pull-down note
-3. 100 nF across the motor terminals, watch `motor noise` in `s` fall
-4. Build the chute, load the coil, run `T25`, bake the timeout in
-5. Then the 50-cycle soak — that number is what the client actually asked for
+1. **Build the protection, no ESP32 connected.** Shopping list is in the README.
+   - Set the buck to **5.0 V with a meter** first
+   - PC817 stage on the coin line, 1N4148 across its LED
+   - At the acceptor's 12 V terminals: P6KE15A TVS, 1000 µF / 25 V, 100 nF
+   - Motor: 47 nF across the terminals, 1N5408 with the **band to positive**
+   - Star-wire the 12 V rail
+2. **Prove it with the meter, still no ESP32.** At the PC817 collector: 3.3 V
+   idle, 0 V per coin pulse, and **never above 3.3 V while the acceptor is
+   plugged and unplugged**. That last test is the one that matters.
+3. **Fit the active-HIGH inhibit relay**, move GPIO 19's 10 k to pull-down, then
+   change `INHIBIT_RELAY_ACTIVE_HIGH` to `true` and rewrite the pull-up comment
+   above it. Recompile.
+4. **Connect a new ESP32.** Boot self-test, then repeat the coin tests: all four
+   coins, accumulation, KSh 40. Check `motor noise` in `s`. Reset with the
+   acceptor connected and listen: the inhibit relay must not click open during
+   boot.
+5. **Flash and verify the stock switch changes**, then commit them.
+6. Wire the LCD, with its I2C pull-ups kept off 5 V.
+7. Build the chute, load the coil, run `T25`, bake the timeout in.
+8. The 50-cycle soak — that number is what the client actually asked for.
 
 ---
 
