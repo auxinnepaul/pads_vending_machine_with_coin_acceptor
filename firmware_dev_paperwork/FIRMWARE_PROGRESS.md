@@ -13,6 +13,21 @@ compiles is not a thing that works.
 
 **State as of 2026-09-28.**
 
+### ⛔ Blocker — the board stopped responding (2026-09-28, later)
+
+**The ESP32 on COM3 is electrically silent.** Everything below about coins is
+still true of the firmware; none of it can be re-tested until the board talks.
+
+This is **not** the toolchain. A full disk had been making `esptool` fail while
+unpacking its own runtime, which masked the real fault. With the disk cleared
+(16.3 GB free) `esptool` runs correctly and reports `No serial data received`.
+
+**Cause found (measured):** inductive kickback from the coin acceptor's
+solenoid puts 24–36 V (true peak likely >100 V) onto the COIN signal line that
+feeds a 3.6 V-max GPIO. **Three boards lost.** Do not connect another ESP32
+until the coin line is optocoupled — see the dated section below.
+
+
 The firmware is functionally complete and every coin path is verified on real
 hardware. What remains is **mechanical and electrical**, not code.
 
@@ -44,6 +59,169 @@ hardware. What remains is **mechanical and electrical**, not code.
 3. 100 nF across the motor terminals, watch `motor noise` in `s` fall
 4. Build the chute, load the coil, run `T25`, bake the timeout in
 5. Then the 50-cycle soak — that number is what the client actually asked for
+
+---
+
+## 2026-09-28 (later) — Why the boards keep dying: inductive kickback on the coin line
+
+**Status: ✅ cause measured, ⏳ fix not yet built.** No firmware change. This is
+the most consequential hardware finding in the project so far.
+
+### The pattern
+
+**Three ESP32 boards have gone silent.** That is not bad luck, it is a circuit
+killing them. Do not put another board on the bench until the fix below is in.
+
+### The measurement
+
+Meter from supply ground to the acceptor's COIN output, **ESP32 disconnected**:
+
+| Condition | Reading |
+|---|---|
+| Idle | ~0.002 mV — effectively 0 V |
+| Hot-swapping the acceptor | **24 V**, and separately **36 V**, very briefly |
+
+### What it means
+
+**Idle 0 V clears the wiring.** The COIN output is a true open-collector, not
+internally pulled to 12 V. The 10 k pull-up to 3.3 V is the correct way to
+drive it. The wiring was never the mistake.
+
+**24 V and 36 V are 2× and 3× the 12 V rail** — the signature of **inductive
+kickback**. The acceptor contains a reject solenoid and motor windings.
+Interrupting that current dumps the coil's stored energy as a spike
+(`V = L·di/dt`) onto the signal line feeding the GPIO.
+
+**The meter under-reports badly.** A DMM samples a few times a second and
+filters heavily; it cannot capture a microsecond spike. A DMM showing 36 V
+implies a true peak likely **well over 100 V**. The ESP32 GPIO absolute maximum
+is **3.6 V**.
+
+This explains everything observed: steady-state running is safe (the machine
+worked for whole sessions), and every connect/disconnect fires a spike tens of
+times over the pin rating. It also fits the previously logged motor coupling of
+up to 472 induced pulses on GPIO 18 — that line has been abused for a while.
+
+### Procedure is necessary but NOT sufficient
+
+"Stop hot-plugging" is not a fix. **The solenoid energises and de-energises
+during normal operation**, every time a coin is rejected. The same mechanism
+fires on a healthy machine, smaller and less often. Plug-order discipline
+(**ground first on connect, ground last on disconnect**; better, one switched
+supply for everything) removes the worst case only.
+
+### The fix — optocouple the coin line
+
+Also expected to eliminate the motor-induced false pulses, since it removes the
+galvanic path entirely:
+
+```
+12 V --[1k]--> PC817 LED ---- COIN signal (acceptor sinks it low)
+
+PC817 transistor:
+  collector --+-- ESP32 GPIO 18
+              +--[10k]-- 3.3 V
+  emitter   ----- ESP32 GND
+```
+
+Supporting parts, in order of value:
+
+1. **Flyback diode (1N4007) across the solenoid**, at the coil — kills the
+   spike at source rather than downstream.
+2. **1 k in series** with the GPIO — limits fault current to what a clamp diode
+   survives.
+3. **3.3 V zener or TVS to GND** on the GPIO side, belt-and-braces.
+
+### Also suspected, lower priority
+
+The **5 V I2C LCD backpack** (PCF8574) idles SDA/SCL at 5 V through its
+pull-ups. ESP32 GPIOs are not 5 V tolerant. But the current through typical
+4.7 k pull-ups is only ~0.3 mA into the clamp diode — a slow degrader, not an
+instant killer. Fix with an I2C level shifter or a 3.3 V-powered backpack.
+**⏳ Unmeasured:** with the LCD powered and the ESP32 out of circuit, measure
+SDA→GND and SCL→GND; 5 V confirms it needs shifting.
+
+### Inhibit port: shorting inhibits ✅ (2026-09-29)
+
+Shorting the acceptor's two inhibit pins by hand with it powered stops it
+accepting coins. So **NC contacts are the fail-safe choice**: coil off (board
+dead, booting or crashed) means contacts closed and the acceptor inhibited.
+
+**Decided:** replace the active-LOW inhibit relay module with an **active-HIGH**
+one matching the motor relay. When it is fitted: set
+`INHIBIT_RELAY_ACTIVE_HIGH = true`, move GPIO 19's 10 k from pull-UP to
+pull-DOWN, and rewrite the pull-up comment above that constant. No MOSFET.
+
+**Flyback diode placement:** the solenoid is inside the acceptor, so the 1N4007
+goes reverse-biased across the acceptor's 12 V input at its connector (cathode
+to +12 V). It is a secondary defence; the PC817 is the primary one.
+
+### Still to confirm
+
+Reconnect the 10 k pull-up to 3.3 V, ESP32 still out of circuit, and measure
+idle. Expect **3.3 V**, dropping to 0 V per coin pulse. Anything above 3.3 V
+means a second problem.
+
+---
+
+## 2026-09-28 (later) — The board went silent, and the full disk was a red herring
+
+**Status: ⏳ unresolved, blocked on bench measurement.** No firmware change.
+
+### What was actually wrong with the tooling
+
+`C:` had **zero bytes free**. `esptool` unpacks a Python runtime into a temp
+directory on every run, so it was dying before it ever reached the serial port.
+Every upload failure logged before this point is explained by that and says
+nothing about the hardware. Disk cleared to 16.3 GB; `esptool` now runs to
+completion.
+
+### What is wrong with the board
+
+With a working `esptool`, the board is silent in every state tested:
+
+| Test | Result |
+|---|---|
+| `esptool --chip esp32 --port COM3 chip_id` | `No serial data received` |
+| Passive listen @ 115200 and @ 74880 | 0 bytes |
+| Forced EN reset via RTS, listening @ 74880 | 0 bytes |
+| All four DTR/RTS combinations after reset | 0 bytes each |
+
+**Two inferences worth keeping.**
+
+1. **Zero bytes rules out a baud mismatch.** A wrong baud rate yields framing
+   garbage, not silence. Nothing at all means no activity on the ESP32's TX
+   line — an absent signal, not a misread one.
+2. **The USB side is healthy.** COM3 enumerates as a CP210x, which runs off USB
+   5 V. So the cable's data lines and the bridge chip are alive; the fault is
+   downstream, on the ESP32 itself. The ROM bootloader prints its
+   `ets Jul 29 2019` banner on every EN release regardless of flashed firmware,
+   given power, a clock and a TX path. It printed nothing.
+
+### Prime suspect
+
+The board was **verified working earlier the same day** (all coin paths). The
+last work done was the inhibit-relay investigation, which involved **jumpering
+5 V** to release an active-low relay module. A slip there — 5 V onto a 3.3 V
+GPIO or onto the 3V3 rail — would kill the regulator or the chip while leaving
+the USB bridge enumerating exactly as observed. **Unconfirmed**, but inspect
+before replacing anything.
+
+### Next session: measure, in this order, stop at the first failure
+
+1. **3V3 → GND** — expect ~3.3 V. 0 V or ~5 V means the regulator is gone.
+2. **EN → GND** — expect ~3.3 V at rest. Near 0 V means permanent reset.
+3. **Swap USB cable and port** — a cable that enumerates but sags on 5 V can
+   brown out the ESP32 while the bridge still works.
+4. **Try a spare ESP32 on COM3** and re-run `chip_id`. That settles
+   board-versus-everything-else in one move.
+
+### Unrelated, done the same session
+
+The uncommitted working-tree changes to the sketch (173 insertions, stock
+switch) now **compile clean** — 25% program storage, 6% dynamic memory, only
+the cosmetic `LiquidCrystal_I2C` architecture warning. **⏳ Not flashed, not
+verified on hardware**, and cannot be until the board responds.
 
 ---
 

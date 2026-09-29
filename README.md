@@ -86,9 +86,11 @@ Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
 
 1. **Set the LM2596 to 5.0 V with a meter before the ESP32 is connected.**
    It ships at whatever the pot happens to be.
-2. **Measure the coin acceptor's pulse output before it touches GPIO 18.**
-   If it swings to 12 V, fit a divider or optocoupler. ESP32 pins are not 5 V
-   tolerant, let alone 12 V.
+2. **Never wire the coin acceptor straight to GPIO 18. Always through a PC817.**
+   Measuring first is not enough: the output idles at 0 V and passes that
+   check, but connecting or disconnecting the acceptor put 24 V and 36 V on the
+   line (a multimeter reading, so the true peak is higher). That has killed
+   three boards. See *Protection — the coin line* below.
 3. **Fit the 10 kΩ pull-down on GPIO 26** so the motor stays still through boot
    and through every reset while flashing.
 4. **Fit a 10 kΩ pull-UP to 3V3 on GPIO 19** — a pull-*up*, the opposite of
@@ -97,6 +99,9 @@ Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
    energises, the NC contact opens and the coin slot is live on every reset.
    Confirm with your ear: reset the board with the acceptor connected and
    listen for a click.
+   *Changes if the module is replaced with an active-HIGH one (or driven
+   through an NPN): the pull-up becomes a pull-**down**, the same as GPIO 26,
+   and `INHIBIT_RELAY_ACTIVE_HIGH` becomes `true`. Change both together.*
 
 ### Wire the pad stock switch closed-when-full
 
@@ -333,6 +338,31 @@ travels the whole rail, which is what browns out the LCD.
 Everything here is cheap and most of it is pennies. Buy spares of the small
 ceramics.
 
+### Protection — the coin line (buy these first)
+
+**Three ESP32 boards have been lost to this line.** Hot-swapping the acceptor
+put 24 V and 36 V on the COIN wire, read on a multimeter that is too slow to
+see the true peak, against a GPIO rated for 3.6 V. See `FIRMWARE_PROGRESS.md`.
+Do not connect a new board until this is built.
+
+| Part | Qty | Goes | Notes |
+|---|---|---|---|
+| **PC817** optocoupler (DIP-4) | 5 | Between the COIN wire and GPIO 18 | The only part that fully isolates the ESP32. Spares for a second machine |
+| **1N4148** | 5 | Across PC817 pins 1–2, band to pin 1 | Protects the internal LED (6 V reverse max) from reverse spikes |
+| 1 kΩ | 5 | 12 V to PC817 pin 1 | ~10 mA LED current |
+| 10 kΩ | 1 | PC817 collector (pin 4) to 3.3 V | GPIO pull-up. Keep it; the internal one is weak |
+
+```
+12 V --[1k]--+-- pin 1 (anode)          pin 4 (collector) --+-- GPIO 18
+             |                                              +--[10k]-- 3.3 V
+          1N4148 (band to pin 1)
+             |
+COIN wire ---+-- pin 2 (cathode)        pin 3 (emitter) ------- ESP32 GND
+```
+
+Idle HIGH, pulse LOW: the same polarity the firmware already expects
+(`INPUT_PULLUP`, `FALLING`). **No firmware change.**
+
 ### Bulk — the electrolytics
 
 | Value | Voltage | Qty | Goes | Why |
@@ -370,9 +400,9 @@ parallel make 94 nF.
 | Part | Qty | Goes | Notes |
 |---|---|---|---|
 | **1N5408** (3 A) | 1 | Flyback across the **motor terminals** | **Band to POSITIVE.** Backwards is a dead short |
-| **NPN transistor** — BC547, 2N2222 or S8050 | 1 | Driving the **inhibit relay** | An ESP32's 3.3 V cannot turn off a 5 V active-low module. Buy a few, they cost nothing |
+| **NPN transistor** — BC547, 2N2222 or S8050 | 2 | Driving the **inhibit relay**, *only* if you keep the active-low module | Simpler still: replace that module with an **active-HIGH** one matching the motor relay, and no NPN is needed. Either way `INHIBIT_RELAY_ACTIVE_HIGH` becomes `true` and GPIO 19 gets a pull-**down** |
 | 1N4007 (1 A) | — | Only for a small gearmotor | Marginal on a wiper motor |
-| SMBJ15A or P6KE15A | 1 | Optional TVS across the acceptor's 12 V | Clamps what the capacitors miss |
+| **P6KE15A** or SMBJ15A | 1 | TVS across the acceptor's 12 V, band to +12 V | **Recommended, no longer optional.** Clamps positive spikes and conducts on negative ones. If unavailable, a 1N4007 reverse-biased in the same place catches the negative half only |
 
 ### Resistors
 
@@ -384,6 +414,11 @@ parallel make 94 nF.
 | 1 kΩ | 1 | Coin-line filter, only if needed |
 
 ### If the motor capacitor alone does not reach zero
+
+*With the PC817 fitted, put this filter on the ESP32 side: 10 nF from GPIO 18 to
+GND at the collector. With the 10 k pull-up that is a 100 µs time constant, still
+far below the gap between real pulses. The drawing below is the pre-optocoupler
+version.*
 
 Filter at the other end instead of the source:
 
