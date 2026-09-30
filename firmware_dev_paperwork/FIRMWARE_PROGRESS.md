@@ -11,7 +11,7 @@ compiles is not a thing that works.
 
 # ▶ RESUME HERE
 
-**State as of 2026-09-30.**
+**State as of 2026-10-01.**
 
 ### ⚡ Switch the 12 V off before plugging or unplugging the coin acceptor
 
@@ -23,9 +23,14 @@ with power on.
 **Wiring as built: `WIRING.md`.** That is the authoritative pin map and
 diagram set.
 
+**A new board is up and passing its self-test** (2026-10-01): flashed, LCD
+working through the level converter, coin line reading correctly through the
+PC817, no relay click during boot.
+
 The firmware is functionally complete and every coin path was verified on real
 hardware, **with the coin line wired directly to GPIO 18**. The PC817 changes
-that input path, so the coin tests must be repeated on the new board.
+that input path, so the coin tests must be repeated on the new board. That is
+the next step.
 
 ### Verified on hardware ✅
 
@@ -41,42 +46,113 @@ that input path, so the coin tests must be repeated on the new board.
   when the acceptor is unplugged and replugged
 - **Power:** 5.01 V from the buck, Schottky into VIN, bulk caps at the 12 V
   block and the buck output, 47 nF + 1N5408 at the motor
+- **I²C level converter (meter):** LV1/LV2 3.29 V, HV1/HV2 5.02 V
+- **New ESP32 first boot:** 3V3 at 3.28 V, nothing hot, flashed first time,
+  `SELF-TEST: PASS`. LCD found at 0x27 through the converter and showing the
+  idle screen; GPIO 18 idle HIGH through the PC817; inhibit relay reported
+  active HIGH / NC; stock switch PADS PRESENT; buzzer chirps
+- **Boot window:** no relay click before the self-test chirp, so the
+  pull-downs on GPIO 19 and 26 hold through reset
+- **Backlight sleep:** goes dark after 2 min idle
+  (`BACKLIGHT_TIMEOUT_MS`), characters still readable
 
 ### Fitted, not yet run on a board 🔌
 
 | | |
 |---|---|
-| **New ESP32** | Wired (PC817 pin 4 to GPIO 18). Not yet powered or flashed |
-| **Active-HIGH inhibit relay** on NC, 10 k pull-down on GPIO 19 | Firmware set to match (`INHIBIT_RELAY_ACTIVE_HIGH = true`) |
-| **10 k pull-down on GPIO 26** | Previously missing |
+| **Active-HIGH inhibit relay** on NC | Self-test reports it correctly and the firmware drives it HIGH after boot. `n1` / `n0` not yet run |
+| **Inhibit-relay / stock-switch guard** (`INHIBIT_SETTLE_MS`, flap detector) | **Flashed and running**, still uncommitted. Not yet exercised: needs the relay switching while the stock line is watched |
+| **Coin decoding through the PC817** | Idle level correct. No coin dropped on the new board yet |
 
 ### Pending ⏳
 
 | | Blocked on |
 |---|---|
-| **LCD** | I²C level converter bought. Wire it per `WIRING.md` §9 |
 | **TVS on the 12 V block** | Not bought. P6KE15A, band to +12 V |
 | **100 µF + 100 nF at the relay module VCC** | Not fitted. Part of the physical fix for the relay disturbing the stock switch |
-| **Inhibit-relay / stock-switch guard** (`INHIBIT_SETTLE_MS`, flap detector) | In the working tree, **uncommitted**. Compiles clean; never flashed |
 | **Motor noise → zero** | Re-measure with `s` now the 47 nF and 1N5408 are fitted |
 | **Real drop times** | No chute or panel. Every timing so far is a finger at the IR sensor |
+| **Service phone number** | Still the placeholder `07XX XXX XXX`. The fault screen tells a stuck customer to call it. Set it before the machine goes to a site |
 | **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
 
 ### Next session should
 
-1. **Wire the level converter and LCD** per `WIRING.md` §9. Meter LV1/LV2
-   (3.3 V) and HV1/HV2 (5 V) before GPIO 21/22 are connected.
-2. **First power-up of the new board** per `WIRING.md` §10: nothing hot, no
-   relay clicks at boot, 3V3 holds above 3.2 V with the motor running.
-3. **Flash and read the self-test.** `n1` / `n0` on the inhibit relay. Press
-   EN a few times with the acceptor connected: no click during boot.
-4. **Repeat the coin tests through the PC817:** all four coins, accumulation,
-   KSh 40. Then `s` for motor noise and `z` for the LCD at 0x27.
-5. **Commit the inhibit-relay / stock-switch guard** once it has run.
-6. Buy and fit the TVS; fit the relay module decoupling.
+1. **`n1` / `n0`** on the inhibit relay: energises on `n1`, releases on `n0`.
+   Press EN a few more times with the acceptor connected: still no click
+   before the chirp.
+2. **Repeat the coin tests through the PC817:** all four coins, accumulation
+   (4 × 5, 2 × 10), KSh 40. Check the 3V3 pin holds above 3.2 V while the
+   motor runs.
+3. **`s` for motor noise** with the 47 nF and 1N5408 fitted.
+4. **Watch the stock line while the inhibit relay switches.** If the guard
+   holds and the log shows no flapping, **commit the guard**.
+5. Buy and fit the TVS; fit the relay module decoupling.
+6. Set the real service number.
 7. Build the chute, load the coil, run `T25`, bake the timeout in.
 8. The 50-cycle soak — that number is what the client actually asked for.
+
+---
+
+## 2026-10-01 — New board up: level converter, LCD and a clean first boot
+
+**Status: ✅ verified on hardware** for everything listed below. No firmware
+change; the sketch flashed is the repo's working tree (the active-HIGH relay
+setting from `4bb1319` plus the still-uncommitted inhibit-relay/stock-switch
+guard).
+
+### Level converter
+
+Wired per `WIRING.md` §9, with the channels as drawn (GPIO 21 → LV1 → HV1 →
+LCD SDA, GPIO 22 → LV2 → HV2 → LCD SCL). Metered before the ESP32 was
+connected:
+
+| Pin | Reading |
+|---|---|
+| LV1, LV2 | 3.29 V |
+| HV1, HV2 | 5.02 V |
+
+Each side idles at its own rail, so the board has pull-ups on both sides and
+the ESP32 can only ever see 3.3 V on SDA and SCL.
+
+### First power-up of the new ESP32
+
+- 12 V on, USB unplugged: nothing warm, no relay click. 3V3 pin 3.28 V.
+- USB in: esptool connected first time with automatic reset (ESP32-D0WD-V3,
+  rev 3.1, 40 MHz crystal, MAC `f4:2d:c9:89:bf:d4`). Flashed at 460800, all
+  four images hash-verified.
+- **COM3 was first refused with "Access denied":** the Arduino IDE's serial
+  monitor was holding the port. Close it before flashing from the command
+  line.
+
+### Boot self-test: PASS
+
+| Section | Reported |
+|---|---|
+| [3] Coin line | GPIO 18 reads HIGH (idle, correct), through the PC817 |
+| [4] Screen | I²C scan finds 0x27; LCD present |
+| [5] IR sensor | chute clear |
+| [7] Inhibit | GPIO 19, active HIGH, NC, inhibited during the test |
+| [8] Stock switch | PADS PRESENT |
+| [8b] Stored balance | store open and writing, KSh 0. **Service number is still the placeholder** |
+| [9] Buzzer | chirped |
+
+After the self-test the firmware drove GPIO 19 HIGH and enabled the acceptor.
+
+### Observed at the bench
+
+- **No relay click before the chirp.** The pull-downs hold GPIO 19 and 26 low
+  through reset, so the slot cannot open and the motor cannot twitch before
+  the firmware is running.
+- The LCD shows the idle screen and pages "PAD IS 20 / THIS MACHINE TAKES
+  5 10 20 OR 40".
+- After 2 minutes idle the backlight goes off (`BACKLIGHT_TIMEOUT_MS`); the
+  text is still readable in the dark. Intended: a coin or the button wakes it.
+
+### Not yet done
+
+Coins through the PC817, `n1`/`n0`, motor noise with the new suppression, and
+exercising the guard. See the RESUME block.
 
 ---
 

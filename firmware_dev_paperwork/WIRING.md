@@ -1,6 +1,6 @@
 # Wiring — Pad Dispenser
 
-**As built on 2026-09-30.** This is the authoritative wiring for the machine. It
+**As built on 2026-09-30, updated 2026-10-01** (level converter, LCD, new board up). This is the authoritative wiring for the machine. It
 supersedes the pin table and diagram in the top-level `README.md` and the older
 wiring card artifact, both of which predate the optocoupler and the relay swap.
 
@@ -37,15 +37,15 @@ The sketch that goes with this wiring is the one in this repo,
 
 | GPIO | Connects to | Firmware mode | External parts | Status |
 |---|---|---|---|---|
-| **18** | PC817 **pin 4** (collector) | `INPUT_PULLUP`, interrupt on `FALLING` | 10 kΩ from pin 4 to **3V3** | ✅ metered, 🔌 firmware |
-| **19** | Inhibit relay (relay 2) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | 🔌 |
-| **26** | Motor relay (relay 1) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | 🔌 |
-| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | — | 🔌 |
-| **25** | Passive buzzer signal | Tone output | — | 🔌 |
-| **21** | Level converter **LV1**, then LCD SDA | I²C SDA | Level converter (section 9) | ⏳ |
-| **22** | Level converter **LV2**, then LCD SCL | I²C SCL | Level converter (section 9) | ⏳ |
+| **18** | PC817 **pin 4** (collector) | `INPUT_PULLUP`, interrupt on `FALLING` | 10 kΩ from pin 4 to **3V3** | ✅ metered; self-test reads idle HIGH. Coins not yet dropped |
+| **19** | Inhibit relay (relay 2) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot; self-test correct. `n1`/`n0` not yet run |
+| **26** | Motor relay (relay 1) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot |
+| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | — | ✅ self-test: chute clear |
+| **25** | Passive buzzer signal | Tone output | — | ✅ chirps at boot |
+| **21** | Level converter **LV1**, then LCD SDA | I²C SDA | Level converter (section 9) | ✅ LCD found at 0x27 |
+| **22** | Level converter **LV2**, then LCD SCL | I²C SCL | Level converter (section 9) | ✅ |
 | **23** | Retry / jam-clear button, other side to GND | `INPUT_PULLUP`, held 1 s | — | 🔌 |
-| **13** | Pad stock limit switch, other side to GND | `INPUT_PULLUP`, LOW = pads present | — | 🔌 |
+| **13** | Pad stock limit switch, other side to GND | `INPUT_PULLUP`, LOW = pads present | — | ✅ self-test: PADS PRESENT |
 
 **Pins deliberately not used:** 0, 2, 5, 12, 15 (strapping pins, which decide
 how the chip boots), 1 and 3 (USB serial console), 6–11 (flash chip), 34–39
@@ -95,13 +95,13 @@ that block.
                                    ├──► relay module VCC (both relays)
                                    │      + 100 µF 16 V + 100 nF   ⏳
                                    ├──► buzzer VCC
-                                   ├──► level converter HV   ⏳
-                                   └──► LCD VCC               ⏳
+                                   ├──► level converter HV   ✅
+                                   └──► LCD VCC               ✅
                                           + 100 µF 16 V + 100 nF   ⏳
 
 ESP32 3V3 pin ──┬──► KY-032 VCC
                 ├──► 10 kΩ pull-up to PC817 pin 4
-                └──► level converter LV   ⏳
+                └──► level converter LV   ✅
 ```
 
 **Measured:** 12 V in, 5.01 V out of the buck. The diode into VIN is a
@@ -310,7 +310,7 @@ Every ground returns to the 12 V terminal block:
 - 12 V adaptor negative, coin acceptor GND, motor −, LM2596 IN−
 - LM2596 OUT− (5 V rail ground), ESP32 GND, relay module GND
 - PC817 pin 3, KY-032 GND, buzzer GND
-- level converter GND ⏳, LCD GND ⏳
+- level converter GND, LCD GND
 
 The inhibit port's lower pin is the acceptor's own ground. It connects only to
 the relay's NC contact, which makes that ground connection only while the relay
@@ -318,7 +318,7 @@ is off.
 
 ---
 
-## 9. LCD through the I²C level converter ⏳ (next session)
+## 9. LCD through the I²C level converter ✅
 
 **Why:** the LCD backpack runs on 5 V and pulls SDA and SCL up to 5 V. ESP32
 pins are rated for 3.6 V. The converter translates between the two, so the
@@ -361,12 +361,22 @@ the wrong side.
 **After connecting:** console command `z` scans the I²C bus and should find
 the LCD at **0x27** (sometimes 0x3F).
 
+**Measured 2026-10-01:** LV1/LV2 3.29 V, HV1/HV2 5.02 V before connecting;
+the boot self-test then found the LCD at 0x27 and it showed the idle screen.
+Each side idling at its own rail shows this board has pull-ups on both sides.
+
+**The backlight goes off after 2 minutes idle** (`BACKLIGHT_TIMEOUT_MS`). The
+text is still readable in the dark. That is intended; a coin or the button
+wakes it.
+
 ---
 
-## 10. First power-up of the new board
+## 10. First power-up of a new board
 
-The new ESP32 is fitted and wired: pin 4 to GPIO 18, pull-ups and pull-downs
-in place. It has not been powered or flashed. In order:
+Done for the current board on 2026-10-01: steps 1–4 passed (3V3 at 3.28 V,
+nothing hot, no click before the chirp, `SELF-TEST: PASS`). Steps 5–8 are next.
+Close the Arduino IDE's serial monitor before flashing from the command line;
+it holds COM3. In order:
 
 1. Power on with the USB unplugged. Nothing should get hot. No relay should
    click.
@@ -393,12 +403,14 @@ in place. It has not been powered or flashed. In order:
 | Motor 47 nF + 1N5408, motor runs | ✅ |
 | PC817 coin line, metered | ✅ |
 | Pull-downs on GPIO 19 and 26 | ✅ fitted |
-| Active-HIGH inhibit relay on NC | 🔌 fitted, not yet run |
-| New ESP32 wired | 🔌 not yet powered |
+| Active-HIGH inhibit relay on NC | ✅ holds through boot; `n1`/`n0` next |
+| New ESP32 | ✅ flashed, self-test PASS |
+| Coins through the PC817 | 🔌 idle level correct, no coin dropped yet |
 | TVS on 12 V block | ⏳ not bought |
 | 100 µF + 100 nF at relay module VCC | ⏳ |
 | 100 nF at acceptor end | ⏳ optional |
-| Level converter + LCD | ⏳ next session |
+| Level converter + LCD | ✅ LCD at 0x27, idle screen showing |
+| 100 µF + 100 nF at the LCD | ⏳ |
 
 The measurements and reasoning behind all of this are in
 `FIRMWARE_PROGRESS.md`, in the 2026-09-28 to 2026-09-30 sections.

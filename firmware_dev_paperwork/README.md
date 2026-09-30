@@ -57,7 +57,8 @@ none of them make sense without it.
 | Jam retry / customer button | ✅ verified on hardware |
 | Drop times | ⏳ **not measured** — no chute yet, every timing so far is a finger at the sensor |
 | Pads feeding off the coil | ⏳ **untested** — the number one risk in the whole project |
-| LCD | ⏳ not wired. Goes through an I²C level converter (`WIRING.md` §9) |
-| Coin inhibit relay | 🔌 replaced with an active-HIGH module on the NC contact. Fitted, not yet run on a board |
+| LCD | ✅ working through an I²C level converter, found at 0x27 (`WIRING.md` §9) |
+| Coin inhibit relay | ✅ active-HIGH module on the NC contact; holds through boot, self-test correct. `n1`/`n0` next |
+| New board (2026-10-01) | ✅ flashed, `SELF-TEST: PASS`, no relay click during boot |
 
 `FIRMWARE_PROGRESS.md` is the living detail behind this table.
