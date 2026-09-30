@@ -21,6 +21,10 @@ The short version, if you read nothing else:
    ESP32 is off, booting or dead, and make that state the safe one.
 5. **A wrong comment or a wrong diagnostic is worse than none.** The next
    person reasons from it.
+6. **A 3.3 V board cannot turn off a 5 V active-LOW relay module.** It needs
+   close to 5 V on its input to release, so it switches on and stays on. Use
+   active-HIGH modules with an ESP32, or drive the input through a transistor
+   (lesson 1.4).
 
 ---
 
