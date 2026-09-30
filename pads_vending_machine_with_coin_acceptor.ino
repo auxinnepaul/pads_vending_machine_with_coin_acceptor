@@ -2989,6 +2989,8 @@ void printHelp()
   LOGLN(F("  l        LCD test pattern"));
   LOGLN(F("  b        buzzer test"));
   LOGLN(F("  n        click the inhibit relay 3x — does it actually move?"));
+  LOGLN(F("  P<s>     record the raw coin waveform on GPIO 18 for one coin,"));
+  LOGLN(F("           next to what the interrupt counted. P or P30"));
   LOGLN();
   LOGLN(F("  x        clear a latched fault"));
   LOGLN(F("           (or hold the front-panel button for 1 s)"));
@@ -3431,6 +3433,134 @@ static bool vendInFlight()
   return state == ST_DISPENSING || state == ST_DELIVERED;
 }
 
+// ---------------------------------------------------------------------------
+//  coinProbe() — console  P<s>.  Record the raw waveform on the coin pin.
+// ---------------------------------------------------------------------------
+//  The interrupt only ever sees falling edges, so when a coin arrives short of
+//  pulses it cannot say why: did the pin never go low for the missing pulse,
+//  or never come back high between two of them? Those need opposite fixes.
+//
+//  This samples GPIO 18 directly, every ~20 us, for one coin, and prints every
+//  LOW and HIGH period next to what the interrupt counted for the same coin.
+//
+//  It only READS the pin. The interrupt keeps counting throughout, and the
+//  coin is banked by loop() afterwards exactly as it would have been. Blocks
+//  for up to <s> seconds waiting (default 30); any key aborts the wait.
+const uint16_t PROBE_MAX_EDGES = 400;
+uint32_t probeEdgeUs[PROBE_MAX_EDGES]; // time of each level change, from the first fall
+
+void coinProbe(long waitS)
+{
+  if (motorRunning || coinMuted)
+  {
+    LOGLN(F("Motor running or coin line muted. Wait for IDLE."));
+    return;
+  }
+  if (waitS <= 0)
+    waitS = 30;
+
+  rule();
+  LOG(F("COIN PROBE: drop ONE coin within "));
+  LOG(waitS);
+  LOGLN(F(" s. Any key aborts."));
+  while (Serial.available())
+    Serial.read();
+
+  // Wait for the first fall.
+  uint32_t t0 = millis();
+  while (digitalRead(PIN_COIN) == HIGH)
+  {
+    if (millis() - t0 >= (uint32_t)waitS * 1000UL || Serial.available())
+    {
+      while (Serial.available())
+        Serial.read();
+      LOGLN(F("No coin seen. Probe stopped."));
+      rule();
+      return;
+    }
+    delayMicroseconds(20);
+  }
+
+  uint32_t isrBefore = isrTotal; // the first fall has already been counted
+  if (isrBefore > 0)
+    isrBefore--;
+  uint32_t start = micros();
+  uint16_t n = 0;
+  probeEdgeUs[n++] = 0; // the fall that started it
+  int level = LOW;
+  uint32_t lastChange = start;
+
+  // Record until the pin has been HIGH for 600 ms (longer than any gap inside
+  // a coin), 8 s have passed, or the buffer is full.
+  while (true)
+  {
+    uint32_t now = micros();
+    int v = digitalRead(PIN_COIN);
+    if (v != level)
+    {
+      level = v;
+      lastChange = now;
+      if (n < PROBE_MAX_EDGES)
+        probeEdgeUs[n++] = now - start;
+    }
+    if (level == HIGH && (now - lastChange) >= 600000UL)
+      break;
+    if ((now - start) >= 8000000UL || n >= PROBE_MAX_EDGES)
+      break;
+    delayMicroseconds(20);
+  }
+  uint32_t isrCounted = isrTotal - isrBefore;
+
+  // Pair up edges: even index = fall (start of LOW), odd = rise (start of HIGH).
+  uint16_t lows = 0, shortLows = 0, shortHighs = 0;
+  LOGLN(F("  #   LOW ms   then HIGH ms"));
+  for (uint16_t i = 0; i < n; i += 2)
+  {
+    float lowMs = (i + 1 < n) ? (probeEdgeUs[i + 1] - probeEdgeUs[i]) / 1000.0f : -1;
+    float highMs = (i + 2 < n) ? (probeEdgeUs[i + 2] - probeEdgeUs[i + 1]) / 1000.0f : -1;
+    lows++;
+    if (lowMs >= 0 && lowMs < 2.0f)
+      shortLows++;
+    if (highMs >= 0 && highMs < (float)COIN_PULSE_DEBOUNCE_MS)
+      shortHighs++;
+    LOG(F("  "));
+    if (lows < 10)
+      LOG(' ');
+    LOG(lows);
+    LOG(F("  "));
+    if (lowMs < 0)
+      LOG(F("  (still low)"));
+    else
+    {
+      if (lowMs < 10)
+        LOG(' ');
+      LOG(lowMs, 1);
+    }
+    LOG(F("     "));
+    if (highMs < 0)
+      LOGLN(F("-  (end of coin)"));
+    else
+      LOGLN(highMs, 1);
+  }
+  LOGLN();
+  LOG(F("  raw LOW periods seen : "));
+  LOGLN(lows);
+  LOG(F("  interrupt counted    : "));
+  LOGLN(isrCounted);
+  LOG(F("  LOWs under 2 ms      : "));
+  LOGLN(shortLows);
+  LOG(F("  HIGHs under "));
+  LOG(COIN_PULSE_DEBOUNCE_MS);
+  LOG(F(" ms     : "));
+  LOGLN(shortHighs);
+  if (n >= PROBE_MAX_EDGES)
+    LOGLN(F("  !! buffer full, the end of the coin was not recorded"));
+  LOGLN(F("  Sampling is every ~20 us: a dip shorter than that can be"));
+  LOGLN(F("  missed here and still be seen by the interrupt."));
+  LOGLN(F("  The coin itself is now counted and banked as normal."));
+  rule();
+}
+
 void handleCommand(char *s)
 {
   char c = s[0];
@@ -3514,6 +3644,10 @@ void handleCommand(char *s)
       holdFor(INHIBIT_SETTLE_MS + 150);
     }
     LOGLN(F("Done. loop() puts it back to whatever the state calls for."));
+    break;
+
+  case 'P':
+    coinProbe(n);
     break;
 
   case 'i':
