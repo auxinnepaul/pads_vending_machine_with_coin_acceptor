@@ -477,6 +477,31 @@ is why 36 V on the meter meant much more in reality.
 COIN to ground and read 33 mV). For transients, a meter gives a lower bound
 at best; use a scope if you have one.
 
+### 3.7 A library call hid a one-second freeze
+
+**What happened.** The status report showed one loop pass taking 1.3 s, then
+2.2 s, and its own note blamed the I²C bus. The real cause was
+`lcd.init()`. In `LiquidCrystal_I2C` 1.1.2 that is the display's power-up
+routine, and it runs `delay(1000)` before sending anything. The firmware
+called it on every display rebuild, including right after the motor
+started, so for the first second of every vend the machine was not watching
+the IR beam. Finger tests hid it, because a finger holds the beam blocked
+where a real pad falls through in a fraction of a second.
+
+**Lessons.**
+- **Read the library before calling it in a loop.** "init" means power-up;
+  a routine written for once at boot has no business in a repeated path.
+- **Measure the stall one event at a time.** Resetting the counter (`r`) and
+  checking after each kind of event pointed straight at the stock switch,
+  then the relay, then the display rebuild.
+- **Fixing the freeze kept the self-repair.** The rebuilds exist so a garbled
+  display recovers on its own. The HD44780's software reset does that in
+  ~15 ms; only the power-up wait was dropped. Loop max went from 2.2 s to
+  51 ms idle.
+- **The diagnostic was wrong twice:** it blamed I²C for a delay() call, then
+  called a normal 50 ms repaint a stall. Calibrate a diagnostic's thresholds
+  against measured normal behaviour.
+
 ---
 
 ## Part 4 — How we worked

@@ -33,7 +33,7 @@ the Bricapa account; the tables below are the authoritative copy.*
 | Passive buzzer module | ASK Electronics | 150 |
 | LM2596 buck converter | ASK Electronics | 200 |
 | Relay module, 2 channel, active-high | ASK Electronics | 300 |
-| Momentary push button (jam clear, inside the door) | ASK Electronics | 50 |
+| Momentary push button (retry, on the front panel) | ASK Electronics | 50 |
 | Limit switch (pad stock sense) | ASK Electronics | 100 |
 | Jumper wire | ASK Electronics | 100 |
 | 12 V 4 A adaptor | Town | ~1,000–1,500 |

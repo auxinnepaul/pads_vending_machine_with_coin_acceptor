@@ -453,9 +453,10 @@ const uint8_t MAX_BUTTON_RETRIES = 3;
 //                                 |<-- 16 chars max -->|
 const char *SERVICE_CONTACT      = "07XX XXX XXX";
 
-// --- JAM-CLEAR BUTTON ------------------------------------------------------
-// Momentary NO button between PIN_CLEAR and GND. Mount it INSIDE the locked
-// door — it is an attendant control, not a customer control.
+// --- RETRY BUTTON ----------------------------------------------------------
+// Momentary NO button between PIN_CLEAR and GND. Mount it on the FRONT, where
+// a customer can reach it: see the note above MAX_BUTTON_RETRIES. A press also
+// wakes a sleeping screen.
 const uint32_t CLEAR_BTN_DEBOUNCE_MS = 50;
 const uint32_t CLEAR_BTN_HOLD_MS = 1000; // must be held, not brushed
 const uint32_t FAULT_ROTATE_MS = 2000;   // LCD line 2 rotation
@@ -1758,6 +1759,52 @@ bool i2cPresent(uint8_t addr)
   return Wire.endTransmission() == 0;
 }
 
+// Re-sync the display's 4-bit interface after a supply dip, in ~15 ms.
+//
+//  WHY NOT lcd.init(). The library's init() is its power-up routine and waits
+//  delay(50) + delay(1000) before it sends anything. Called from say() after
+//  every motor start, relay switch and coin, that froze loop() for about a
+//  second each time (loop max read 1.3 s and 2.2 s on the bench). The worst
+//  case was the vend: the dispensing screen follows motorOn(), so for the first
+//  second of every vend loop() was not watching the IR beam, and a pad falling
+//  in that second would have been missed.
+//
+//  The display here is already powered; a dip only knocks the 4-bit interface
+//  out of step. The HD44780's own software reset (datasheet fig. 24: 0x3 three
+//  times, then 0x2) puts it back in step without the power-up wait. The first
+//  nibbles have to be written raw, because the library only exposes whole
+//  commands, so they go straight to the PCF8574 on the backpack:
+//      P0 = RS, P1 = RW, P2 = E, P3 = backlight, P4-P7 = D4-D7
+//  The full lcd.init() is still used once, at boot, where the wait is real.
+void lcdRawNibble(uint8_t nibbleHigh)
+{
+  uint8_t b = (nibbleHigh & 0xF0) | LCD_BACKLIGHT; // RS=0 RW=0: a command
+  Wire.beginTransmission(LCD_I2C_ADDR);
+  Wire.write(b | 0x04); // E high
+  Wire.endTransmission();
+  delayMicroseconds(1);
+  Wire.beginTransmission(LCD_I2C_ADDR);
+  Wire.write(b); // E low: the nibble is latched
+  Wire.endTransmission();
+  delayMicroseconds(50);
+}
+
+void lcdResync()
+{
+  lcdRawNibble(0x30);
+  delayMicroseconds(4500);
+  lcdRawNibble(0x30);
+  delayMicroseconds(4500);
+  lcdRawNibble(0x30);
+  delayMicroseconds(150);
+  lcdRawNibble(0x20); // now in 4-bit mode; whole commands work from here
+  lcd.command(LCD_FUNCTIONSET | LCD_4BITMODE | LCD_2LINE | LCD_5x8DOTS);
+  lcd.display();
+  lcd.clear();
+  lcd.command(LCD_ENTRYMODESET | LCD_ENTRYLEFT | LCD_ENTRYSHIFTDECREMENT);
+  lcd.home();
+}
+
 // Every message must fit 16 characters. Silently does nothing if there is no
 // screen, so a dead LCD degrades the machine to console-only instead of
 // taking the whole thing down.
@@ -1768,7 +1815,7 @@ void say(const char *l1, const char *l2 = "")
   if (lcdNeedsReinit)
   {
     lcdNeedsReinit = false;
-    lcd.init(); // re-sync the 4-bit interface after a motor-induced dip
+    lcdResync(); // ~15 ms; NOT lcd.init(), which blocks for over a second
     lcd.backlight();
   }
   lcd.clear();
@@ -2186,7 +2233,7 @@ void wakeDisplay()
   if (!lcdOk || backlightOn)
     return;
   backlightOn = true;
-  lcdNeedsReinit = true; // say() does lcd.init() + lcd.backlight() for us
+  lcdNeedsReinit = true; // say() re-syncs the display and lights it for us
   repaintForState();
 }
 
@@ -2354,11 +2401,13 @@ void attemptClear(const char *who, bool fromButton)
   showIdle();
 }
 
-// THE JAM-CLEAR BUTTON — an attendant control, mounted INSIDE the locked door.
+// THE RETRY BUTTON — a customer control, on the front of the machine.
 //
-//  Held for CLEAR_BTN_HOLD_MS, it puts a faulted machine back in service. It
-//  is a hold rather than a press so that a brush past it in a dark cabinet
-//  cannot return a broken machine to service.
+//  Any press wakes a sleeping screen at once, before the hold, so whoever is
+//  standing there can read what it says. Held for CLEAR_BTN_HOLD_MS, it retries
+//  a failed vend (keeping her credit) or releases a pad recovered after a power
+//  cut. It is a hold rather than a press so that brushing past it does nothing
+//  more than light the screen.
 //
 //  Two things guard it, both deliberate:
 //
@@ -2391,6 +2440,9 @@ void clearButtonService()
     {
       clearBtnDownMs = now;
       clearBtnHandled = false;
+      // Somebody is at the machine. Light the screen now, not after the
+      // hold, so she can read it. Harmless when it is already lit.
+      wakeDisplay();
     }
   }
 
@@ -3161,7 +3213,10 @@ void printStatus()
   LOG(F("  loop max     : "));
   LOG(loopMaxUs);
   LOGLN(F(" us"));
-  LOGLN(F("  (loop max over ~50000 us means I2C is stalling)"));
+  // Measured 2026-10-01: one full screen paint is ~50 ms over I2C at
+  // 100 kHz, and the pass that finishes a coin and starts a vend (report,
+  // flash write, two paints) ~230 ms. The old note called 50 ms a stall.
+  LOGLN(F("  (a screen paint is ~50 ms; over ~300000 us, something blocked)"));
   LOG(F("  coin acceptor: "));
   LOGLN(coinsAllowed ? F("enabled") : F("INHIBITED"));
   rule();
@@ -3913,7 +3968,7 @@ void setup()
 
   LOGLN();
   rule();
-  LOGLN(F("  BRICAPA PAD DISPENSER  -  prototype firmware v" FW_VERSION));
+  LOGLN(F("  PAD DISPENSER  -  prototype firmware v" FW_VERSION));
   LOGLN(F("  Ref BT-PADVEND-2026-001"));
   rule();
   LOGLN(F("  Type ? for commands. Console changes are not saved; the"));
@@ -4004,7 +4059,7 @@ void setup()
     return; // no attachInterrupt: coins cannot be counted in this condition
   }
 
-  say("PAD DISPENSER", "BRICAPA  v" FW_VERSION);
+  say("PAD DISPENSER", "FIRMWARE v" FW_VERSION);
   holdFor(1200);
 
   // ---- Restore a balance left on the meter by a power cut ----

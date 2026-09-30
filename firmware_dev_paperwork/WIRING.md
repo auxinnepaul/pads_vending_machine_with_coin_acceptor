@@ -281,7 +281,8 @@ buzzer VCC ── 5 V rail    buzzer GND ── common GND    buzzer S ── GP
 ## 7. Retry button and pad stock switch
 
 ```
-GPIO 23 ── momentary button ── GND        (front panel, customer can reach it)
+GPIO 23 ── momentary button ── GND        (front panel, customer can reach it;
+                                           any press also wakes a sleeping screen)
 GPIO 13 ── limit switch    ── GND         (closed = pads present)
 ```
 

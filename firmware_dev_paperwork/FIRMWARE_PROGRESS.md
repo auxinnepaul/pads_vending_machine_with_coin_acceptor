@@ -82,9 +82,11 @@ the next step.
 
 1. ~~Inhibit relay click test and EN resets~~ ✅ 2026-10-01
 2. ~~Coin tests through the PC817~~ ✅ 2026-10-01, after finding and fixing
-   the double count. Still to do: check the 3V3 pin holds above 3.2 V while
-   the motor runs, and two coins inserted fast still read as two.
-3. **`s` for motor noise** with the 47 nF and 1N5408 fitted.
+   the double count. 3V3 holds at 3.33 V with the motor running ✅. Two
+   fast coins read as two ✅.
+3. ~~`s` for motor noise~~ ✅ 0 pulses discarded. **New: find what made one
+   loop pass take 1.3 s** (see the test log), and whether the stock line
+   changed on its own.
 4. **Watch the stock line while the inhibit relay switches.** If the guard
    holds and the log shows no flapping, **commit the guard**.
 5. Buy and fit the TVS; fit the relay module decoupling.
@@ -289,7 +291,85 @@ double count are gone. Before the fix the KSh 10 read wrong on 10 of 11
 drops. Drop times are a finger at the sensor and mean nothing yet. The
 50-cycle soak is the full proof.
 
-**Test 3 — motor noise (`s`)** ⏳
+**3V3 under load ✅.** Meter on the ESP32's 3V3 pin during a vend: 3.33 V,
+no visible dip while the motor ran. No brown-out risk from the motor start.
+
+**Two fast coins ✅.** Two KSh 5 as fast as the acceptor would take them
+(2 s apart): two separate `1 pulse` reports, credit 5 → 10. No merge at the
+400 ms coin gap.
+
+**Test 3 — motor noise ✅.** `s` after vends: `motor noise : 0 pulses
+discarded`. It was 5–46/s before the PC817, 47 nF and 1N5408. The count is
+taken before any debounce, so zero means no edges at all while the motor ran.
+
+**⚠ Open from the same `s`:**
+- **`loop max : 1288116 us`.** One pass of loop() took 1.3 s. The status
+  line blames I²C, but that is an assumption in the firmware, not a
+  measurement. The paged blocking screens (`sayAllPages`) only run on
+  fault/refusal paths, none of which happened in that session. Matters
+  because loop() watches the IR beam during a vend: a stall as a pad falls
+  could miss the drop and fault or retry (a second pad). Coins are safe; the
+  interrupt counts regardless. To find it: `r`, then `s` after each kind of
+  event.
+- **`stock changes : 2 in the last minute`** with no coin, motor or relay
+  activity in that minute. **Resolved:** the builder was pressing the stock
+  switch to test it.
+
+**✅ Loop stall found: the LCD library's init() waits over a second.**
+After `r`, loop max read **2.2 s** with the machine idle, and a KSh 20 vend
+did not raise it. Both high readings (1.3 s, 2.2 s) came in a minute when the
+stock switch was being pressed, which switches the inhibit relay, which marks
+the display for a rebuild. The rebuild in `say()` called `lcd.init()`, and
+`LiquidCrystal_I2C` 1.1.2's `begin()` runs `delay(50)` then **`delay(1000)`**
+before anything else: ~1.07 s per rebuild, two in one pass = 2.2 s. The
+status line's "means I2C is stalling" was a wrong guess.
+
+It mattered in the vend: `motorOn()` marks the display for rebuild and the
+dispensing screen follows, so for the first second of every vend loop() was
+not watching the IR beam. A real pad falls through in a fraction of that and
+would have been missed (retry = a second pad, or a false jam). The finger
+tests hid it by holding the beam blocked.
+
+**Fix (uncommitted, compiles clean):** `lcdResync()` re-syncs the 4-bit
+interface with the HD44780 software reset (0x3 ×3, 0x2, then function set,
+display on, clear, entry mode) in ~15 ms, writing the first nibbles straight
+to the PCF8574 because the library keeps them private. Every rebuild trigger
+is kept; they exist so a display garbled by a supply dip repairs itself, and
+the reset sequence is what does that. The full `lcd.init()` stays at boot
+only. To verify: loop max after `r`, a vend, a stock-switch press, and the
+screen staying readable after each.
+
+**Also:** the name removed from the boot banner and LCD boot screen
+(`PAD DISPENSER` / `FIRMWARE v2.0`), and from LOG_REFERENCE's banner quote.
+
+**Also: the retry button wakes a sleeping screen** (uncommitted, compiles
+clean). Before, only a coin or a console command woke it. Now any debounced
+press calls `wakeDisplay()` at once, before the 1 s hold, so the person at the
+machine can read it; the hold still retries or releases a recovered pad. Two
+comments still called it an attendant control "INSIDE the locked door",
+contradicting the design note above them (moved to the front on purpose);
+both corrected, and the README parts list with them. To verify: let the
+backlight sleep (2 min), press the button, and the screen lights immediately.
+
+**Verified on hardware ✅** (flashed, `SELF-TEST: PASS`):
+
+| Check | Result |
+|---|---|
+| LCD boot screen | `PAD DISPENSER` / `FIRMWARE v2.0` |
+| Retry button with the backlight asleep | lights the screen at once |
+| `loop max` after `r`, idle | **51 ms** (was 2.2 s) |
+| `loop max` after a KSh 20 vend | **227 ms** (was over 1 s on every vend) |
+
+51 ms is one ordinary repaint: 32 characters through the PCF8574 at 100 kHz.
+The 227 ms is most likely the pass that finishes a coin and starts the vend
+(serial report, flash write, a repaint for the coin and one for dispensing),
+which ends before the coil can have moved a pad; drops so far take over a
+second. **Not measured which pass it was.** The soak with real pads will
+show a missed drop if there is one; a per-state loop max would settle it.
+
+The status line's "loop max over ~50000 us means I2C is stalling" called a
+normal repaint a stall. Reworded to "a screen paint is ~50 ms; over
+~300000 us, something blocked" (compiled; shows from the next flash).
 
 ---
 

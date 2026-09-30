@@ -19,7 +19,7 @@ E (101) psram: PSRAM ID read error: 0xffffffff
 optional memory this board does not have. Nothing to do with our firmware.
 
 ```
-  BRICAPA PAD DISPENSER  -  prototype firmware v2.0
+  PAD DISPENSER  -  prototype firmware v2.0
   Type ? for commands. Console changes are not saved; the
   meter balance is the only thing kept through a power cut.
 ```
