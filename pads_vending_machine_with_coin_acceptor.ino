@@ -43,7 +43,8 @@
 
     GPIO 21  LCD SDA
     GPIO 22  LCD SCL
-    GPIO 18  Coin acceptor pulse   (INPUT_PULLUP, acceptor pulls LOW)
+    GPIO 18  Coin acceptor pulse   (via PC817, INPUT_PULLUP, pulled LOW per pulse)
+    GPIO 19  Coin inhibit relay    (active HIGH, 10k pull-DOWN to GND, NC contact)
     GPIO 26  Relay control         (active HIGH, 10k pull-DOWN to GND)
     GPIO 27  KY-032 IR output
     GPIO 25  Passive buzzer
@@ -52,8 +53,9 @@
   BEFORE FIRST POWER-UP — three things that kill hardware
   ---------------------------------------------------------------------------
     1. Set the LM2596 to 5.0 V with a meter BEFORE connecting the ESP32.
-    2. Measure the coin acceptor's pulse output. If it swings to 12 V it must
-       go through a divider or optocoupler — it will destroy a GPIO directly.
+    2. The coin line goes through a PC817, never straight to GPIO 18. It idles
+       at 0 V, so measuring it proves nothing: plugging and unplugging the
+       acceptor put 24-36 V on it and killed three boards. See README.
     3. Fit the 10k pull-down on GPIO 26 so the motor stays still through boot
        and through every reset while you are flashing.
 
@@ -378,12 +380,16 @@ const uint8_t LCD_I2C_ADDR = 0x27;
 // to the lower pin (its GND) = inhibited. Driven by a dry relay contact, never
 // by a GPIO — on some units that pin sits at 12 V.
 //
-// false = the relay module energises when its input is pulled LOW. Most
-//         opto-isolated Chinese relay boards are this way round.
-// IMPORTANT: with an active-LOW module the pin must be HIGH to keep the relay
-// OFF, so PIN_INHIBIT needs a 10k pull-UP to 3V3 — not a pull-down. Get this
-// backwards and the acceptor is live for the whole boot window.
-const bool INHIBIT_RELAY_ACTIVE_HIGH = false;
+// true  = the relay module energises when its input is driven HIGH. This is
+//         the same module as the motor relay, and what is fitted.
+// false = energises when pulled LOW. Do not go back to one: an ESP32's 3.3 V
+//         cannot turn a 5 V active-LOW module OFF, so it energises and never
+//         releases. That is why it was replaced.
+// IMPORTANT: the pull resistor on PIN_INHIBIT follows this setting. Active HIGH
+// needs a 10k pull-DOWN to GND (the same as the motor's GPIO 26); active LOW
+// would need a pull-UP. Get it backwards and the relay energises through the
+// boot window, the NC contact opens, and the slot is live on every reset.
+const bool INHIBIT_RELAY_ACTIVE_HIGH = true;
 
 // Which contact of the relay you wired across the 2-pin port.
 //   true  = NC. Closed with the coil off, so the acceptor is inhibited
@@ -1515,12 +1521,12 @@ void motorOff()
 //    INHIBIT_CONTACT_IS_NC       which relay contact you wired to the acceptor
 //    INHIBIT_RELAY_ACTIVE_HIGH   which way the relay module's input works
 //
-//  With the shipped settings (NC contact, active-LOW module) it works out as:
+//  With the shipped settings (NC contact, active-HIGH module) it works out as:
 //
 //      want        contact      relay      pin
 //      ----------  -----------  ---------  ------
-//      inhibit     closed       off        HIGH
-//      accept      open         on         LOW
+//      inhibit     closed       off        LOW
+//      accept      open         on         HIGH
 //
 //  The NC contact is the important half. Closed means inhibited, and a relay
 //  with no power sits closed — so an unpowered, booting, halted or crashed
@@ -2642,6 +2648,14 @@ bool selfTest(bool verbose)
     LOGLN(F("  NOTE: an ESP32's 3.3 V cannot turn OFF a 5 V active-low module"));
     LOGLN(F("  — it energises and never releases. Drive it through an NPN and"));
     LOGLN(F("  set ACTIVE_HIGH true. See README."));
+  }
+  else
+  {
+    LOG(F("  Active HIGH, so GPIO "));
+    LOG(PIN_INHIBIT);
+    LOGLN(F(" needs a 10k pull-DOWN to GND, the"));
+    LOGLN(F("  same as the motor pin: held high through boot, the relay"));
+    LOGLN(F("  would energise and open the slot on every reset."));
   }
   LOG(F("  contact     : "));
   if (INHIBIT_CONTACT_IS_NC)

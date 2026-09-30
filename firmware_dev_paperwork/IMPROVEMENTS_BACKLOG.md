@@ -20,12 +20,13 @@ correctly and tells nobody anything.
 
 ### 2. Settle the inhibit relay polarity
 
-**Status:** `INHIBIT_RELAY_ACTIVE_HIGH = false`, unconfirmed against the real
-module.
+**Status:** decided by hardware. The active-LOW module was replaced
+(2026-09-30) with an active-HIGH one identical to the motor relay, because
+3.3 V cannot release a 5 V active-LOW module. `INHIBIT_RELAY_ACTIVE_HIGH =
+true`, GPIO 19 pull-**down**. ⏳ Still to confirm on a live board.
 
-Run `n1`, then `n0`. Whichever level **energises** the relay is the module's
-active level. That one answer also settles whether GPIO 19 needs a pull-up or a
-pull-down, which the self-test currently states as if it were known.
+Confirm with `n1` then `n0`: the relay should energise on `n1` and release on
+`n0`. Then reset with the acceptor connected and listen: no click through boot.
 
 ### 3. Suppress the motor, drive `motor noise` to zero
 

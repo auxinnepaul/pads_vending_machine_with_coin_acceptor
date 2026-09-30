@@ -11,18 +11,21 @@ compiles is not a thing that works.
 
 # ▶ RESUME HERE
 
-**State as of 2026-09-29.**
+**State as of 2026-09-30.**
 
-### ⛔ Do not connect an ESP32 until step 1 below is built
+### ⚡ Switch the 12 V off before plugging or unplugging the coin acceptor
 
-**Three boards lost, cause measured.** Connecting or disconnecting the coin
-acceptor puts 24–36 V on the COIN line (a multimeter reading, so the true peak
-is higher) that feeds a GPIO rated for 3.6 V. Inductive kickback from the
-acceptor's solenoid. The line idles at 0 V, which is why "measure it first"
-never caught it. Full account in the dated sections below.
+The PC817 now protects the ESP32 from the coin line (metered, see below). The
+TVS for the 12 V rail is **not bought yet**, so the buck is still exposed to
+the worst spikes. Until it is fitted, never connect or disconnect the acceptor
+with power on.
 
-The firmware is functionally complete and every coin path is verified on real
-hardware. What remains is **electrical and mechanical**, not code.
+**Wiring as built: `WIRING.md`.** That is the authoritative pin map and
+diagram set.
+
+The firmware is functionally complete and every coin path was verified on real
+hardware, **with the coin line wired directly to GPIO 18**. The PC817 changes
+that input path, so the coin tests must be repeated on the new board.
 
 ### Verified on hardware ✅
 
@@ -34,43 +37,44 @@ hardware. What remains is **electrical and mechanical**, not code.
 - Jam retry, the three-attempt cap, and the customer button
 - Coin-noise muting (the machine no longer spends induced pulses)
 - Shorting the inhibit port by hand inhibits the acceptor, so NC is fail-safe
+- **PC817 coin line (meter only):** 3.29 V idle, 33 mV when held low, no change
+  when the acceptor is unplugged and replugged
+- **Power:** 5.01 V from the buck, Schottky into VIN, bulk caps at the 12 V
+  block and the buck output, 47 nF + 1N5408 at the motor
 
-*All of the above was verified with the coin line wired directly to GPIO 18.
-The PC817 changes that path, so the coin tests must be repeated after step 3.*
+### Fitted, not yet run on a board 🔌
+
+| | |
+|---|---|
+| **New ESP32** | Wired (PC817 pin 4 to GPIO 18). Not yet powered or flashed |
+| **Active-HIGH inhibit relay** on NC, 10 k pull-down on GPIO 19 | Firmware set to match (`INHIBIT_RELAY_ACTIVE_HIGH = true`) |
+| **10 k pull-down on GPIO 26** | Previously missing |
 
 ### Pending ⏳
 
 | | Blocked on |
 |---|---|
-| **Coin-line protection** | Parts. PC817 stage, TVS and bulk caps at the acceptor. README → *Protection — the coin line* |
-| **Inhibit relay** | Decided: active-HIGH module matching the motor relay, NC contact, GPIO 19 pull-**down**, `INHIBIT_RELAY_ACTIVE_HIGH = true`. Not yet fitted |
-| **Stock switch firmware** | 173 lines in the working tree, **uncommitted**. Compiles clean; never flashed |
-| **Motor noise → zero** | Down from 70/s to 5–46/s. 47 nF (in hand) across the motor terminals, 1N5408 flyback |
-| **LCD** | Not wired. I2C scan finds nothing. 5 V backpack pull-ups need handling |
+| **LCD** | I²C level converter bought. Wire it per `WIRING.md` §9 |
+| **TVS on the 12 V block** | Not bought. P6KE15A, band to +12 V |
+| **100 µF + 100 nF at the relay module VCC** | Not fitted. Part of the physical fix for the relay disturbing the stock switch |
+| **Inhibit-relay / stock-switch guard** (`INHIBIT_SETTLE_MS`, flap detector) | In the working tree, **uncommitted**. Compiles clean; never flashed |
+| **Motor noise → zero** | Re-measure with `s` now the 47 nF and 1N5408 are fitted |
 | **Real drop times** | No chute or panel. Every timing so far is a finger at the IR sensor |
 | **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
 
 ### Next session should
 
-1. **Build the protection, no ESP32 connected.** Shopping list is in the README.
-   - Set the buck to **5.0 V with a meter** first
-   - PC817 stage on the coin line, 1N4148 across its LED
-   - At the acceptor's 12 V terminals: P6KE15A TVS, 1000 µF / 25 V, 100 nF
-   - Motor: 47 nF across the terminals, 1N5408 with the **band to positive**
-   - Star-wire the 12 V rail
-2. **Prove it with the meter, still no ESP32.** At the PC817 collector: 3.3 V
-   idle, 0 V per coin pulse, and **never above 3.3 V while the acceptor is
-   plugged and unplugged**. That last test is the one that matters.
-3. **Fit the active-HIGH inhibit relay**, move GPIO 19's 10 k to pull-down, then
-   change `INHIBIT_RELAY_ACTIVE_HIGH` to `true` and rewrite the pull-up comment
-   above it. Recompile.
-4. **Connect a new ESP32.** Boot self-test, then repeat the coin tests: all four
-   coins, accumulation, KSh 40. Check `motor noise` in `s`. Reset with the
-   acceptor connected and listen: the inhibit relay must not click open during
-   boot.
-5. **Flash and verify the stock switch changes**, then commit them.
-6. Wire the LCD, with its I2C pull-ups kept off 5 V.
+1. **Wire the level converter and LCD** per `WIRING.md` §9. Meter LV1/LV2
+   (3.3 V) and HV1/HV2 (5 V) before GPIO 21/22 are connected.
+2. **First power-up of the new board** per `WIRING.md` §10: nothing hot, no
+   relay clicks at boot, 3V3 holds above 3.2 V with the motor running.
+3. **Flash and read the self-test.** `n1` / `n0` on the inhibit relay. Press
+   EN a few times with the acceptor connected: no click during boot.
+4. **Repeat the coin tests through the PC817:** all four coins, accumulation,
+   KSh 40. Then `s` for motor noise and `z` for the LCD at 0x27.
+5. **Commit the inhibit-relay / stock-switch guard** once it has run.
+6. Buy and fit the TVS; fit the relay module decoupling.
 7. Build the chute, load the coil, run `T25`, bake the timeout in.
 8. The 50-cycle soak — that number is what the client actually asked for.
 
@@ -115,6 +119,46 @@ This explains everything observed: steady-state running is safe (the machine
 worked for whole sessions), and every connect/disconnect fires a spike tens of
 times over the pin rating. It also fits the previously logged motor coupling of
 up to 472 induced pulses on GPIO 18 — that line has been abused for a while.
+
+### Post-mortem on the dead boards ✅ (2026-09-30)
+
+Continuity checks on two of the dead boards, unpowered:
+
+| Board | Finding | Reading |
+|---|---|---|
+| A | **GPIO 18 shorted to GND.** 3V3 not shorted; stays cold when powered | The spike entered through the coin pin and destroyed its input stage |
+| B | GPIO 18 not shorted. **3V3 shorted to GND; runs hot when powered** | The same path one step further: through the pin's clamp diode into the internal 3.3 V rail |
+
+Board A shows the damage where the spike came in, board B shows the next step
+along the path. This is direct physical evidence for the coin-line mechanism,
+not an inference. Board A's 3V3 still regulates and is usable as a bench 3.3 V
+source, with its GPIO 18 left unconnected. Board B must not be powered: its
+shorted rail loads the buck.
+
+### PC817 stage built and metered ✅ (2026-09-30)
+
+Built as in the README, with the clamp diode (a 1N4007, as no 1N4148 was
+bought) connected from COIN to the 12 V side of the 1 k rather than to pin 1.
+That clamps COIN to about 12.6 V and still holds the LED to ~0.6 V reverse, so
+it was kept. Meter at pin 4 (collector) to GND, pulled up to 3.3 V from a dead
+board's still-working 3V3, GPIO 18 not connected:
+
+| Check | Reading |
+|---|---|
+| Idle | 3.29 V |
+| Coin dropped | dips to ~2.2 V on the meter and recovers (the meter averages the pulses) |
+| COIN held to GND (a very long pulse) | **33 mV**, well below the 0.8 V logic-low threshold |
+| Acceptor unplugged and replugged, several times | **No change** from 3.29 V |
+
+The last row is the one that matters. The same action used to put 24–36 V on
+the line. **⏳ Not yet verified with firmware:** coin decoding through the
+optocoupler still has to be re-run on a live board.
+
+Also fitted the same day: 10 k pull-downs on GPIO 19 and GPIO 26 (neither pin
+had one), the active-HIGH inhibit relay, 1000 µF at the 12 V terminal block,
+1000 µF + 100 nF at the buck output, 47 nF + 1N5408 at the motor. Buck
+output 5.01 V; the VIN diode is a Schottky. **No TVS yet**, so switch the 12 V
+off before plugging or unplugging the acceptor until one is fitted.
 
 ### Procedure is necessary but NOT sufficient
 

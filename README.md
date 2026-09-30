@@ -64,19 +64,21 @@ corrupts the display.
                                  └─ buzzer
 ```
 
-See the [wiring card](https://claude.ai/artifact/36fmakGo1G3eLnhrZJe6Qf) for the
-same thing drawn out, including the two pull resistors and which way the diode
-band faces.
+**[`firmware_dev_paperwork/WIRING.md`](firmware_dev_paperwork/WIRING.md) is the
+current wiring**: every pin, the power tree, the PC817 coin line, both relays
+and the LCD level converter, as built. The older
+[wiring card](https://claude.ai/artifact/36fmakGo1G3eLnhrZJe6Qf) predates the
+optocoupler and the relay swap.
 
 | Signal | GPIO | Notes |
 |---|---|---|
 | LCD SDA | 21 | |
 | LCD SCL | 22 | |
-| Coin pulse | 18 | `INPUT_PULLUP`, acceptor pulls LOW, interrupt on FALLING |
+| Coin pulse | 18 | **Through a PC817, never direct.** `INPUT_PULLUP`, pulled LOW per pulse, interrupt on FALLING |
 | Relay | 26 | active HIGH, **10 kΩ pull-down to GND** |
 | IR sensor | 27 | powered from 3V3 |
 | Buzzer | 25 | passive, LEDC or `tone()` depending on core version |
-| Coin inhibit | 19 | relay 2 → HX-916 2-pin port. Active LOW, **10 kΩ pull-UP to 3V3** |
+| Coin inhibit | 19 | relay 2 → HX-916 2-pin port, NC contact. Active HIGH, **10 kΩ pull-down to GND** |
 | Retry button | 23 | momentary button to GND, `INPUT_PULLUP`, **on the front where a customer can reach it** |
 | Pad stock | 13 | limit switch to GND, `INPUT_PULLUP`. Closed = pads present |
 
@@ -93,19 +95,19 @@ Avoided: GPIO 0, 2, 5, 12, 15 (strapping), 1 and 3 (UART), 6–11 (flash).
    three boards. See *Protection — the coin line* below.
 3. **Fit the 10 kΩ pull-down on GPIO 26** so the motor stays still through boot
    and through every reset while flashing.
-4. **Fit a 10 kΩ pull-UP to 3V3 on GPIO 19** — a pull-*up*, the opposite of
-   GPIO 26, because the inhibit relay module is active LOW. The pin floats
-   until `setup()` runs; if it sits low through that window the relay
-   energises, the NC contact opens and the coin slot is live on every reset.
-   Confirm with your ear: reset the board with the acceptor connected and
-   listen for a click.
-   *Changes if the module is replaced with an active-HIGH one (or driven
-   through an NPN): the pull-up becomes a pull-**down**, the same as GPIO 26,
-   and `INHIBIT_RELAY_ACTIVE_HIGH` becomes `true`. Change both together.*
+4. **Fit a 10 kΩ pull-DOWN to GND on GPIO 19**, the same as GPIO 26. The
+   inhibit relay module is active HIGH (the same module as the motor relay).
+   The pin floats until `setup()` runs; if it sits high through that window
+   the relay energises, the NC contact opens and the coin slot is live on
+   every reset. Confirm with your ear: reset the board with the acceptor
+   connected and listen for a click. There should be none.
+   *The pull resistor follows the module: an active-LOW module would need a
+   pull-**up** instead, and `INHIBIT_RELAY_ACTIVE_HIGH = false`. Change both
+   together. Don't go back to active-LOW: 3.3 V cannot release it.*
 
 ### Wire the pad stock switch closed-when-full
 
-One side to GPIO 33, the other to GND. Nothing else — the internal pull-up
+One side to GPIO 13, the other to GND. Nothing else — the internal pull-up
 does the rest.
 
 **Closed (LOW) = pads present. Open (HIGH) = empty.** That direction is the
