@@ -732,6 +732,49 @@ const uint32_t MOTOR_NOISE_SETTLE_MS = 500;
 const uint32_t PAD_SWITCH_DEBOUNCE_MS = 400;
 
 // ---------------------------------------------------------------------------
+//  INHIBIT_SETTLE_MS — how long the stock switch is not believed after the
+//                      coin-inhibit relay moves
+// ---------------------------------------------------------------------------
+//  WHAT        A blackout window. For this long after the inhibit relay is
+//              driven to a new level, the stock switch is not sampled at all,
+//              and its debounce clock is restarted so a change still has to
+//              hold for PAD_SWITCH_DEBOUNCE_MS AFTER the window closes.
+//
+//  WHY IT EXISTS — this is a real fault, seen on this bench, not a precaution.
+//              The machine sat in this loop, forever, a few times a second:
+//
+//                relay energises  ->  stock line reads EMPTY
+//                enterEmpty()     ->  relay releases
+//                relay releases   ->  stock line reads PADS PRESENT
+//                back in service  ->  relay energises  ->  ...
+//
+//              The log gives the causation away by its ordering: every single
+//              stock change landed immediately after a relay line, never on
+//              its own. A switch under a stack of pads does not change state
+//              in lockstep with a relay coil. The relay was moving the stock
+//              line — through the rail, the ground, or coupling between the
+//              two runs of wire.
+//
+//              It is not a cosmetic fault. Hammering a relay coil several
+//              times a second reset the board twice: once TG1WDT_SYS_RESET
+//              (interrupt watchdog) and once a Guru Meditation double
+//              exception part-way through printing the self-test.
+//
+//  THE REAL FIX IS PHYSICAL. Separate the stock switch run from the relay
+//              wiring, give the relay module its own supply decoupling, and
+//              make the grounds meet at one point. This constant stops the
+//              firmware amplifying the problem into a reset loop; it does not
+//              make the coupling go away.
+//
+//  TOO SHORT   The oscillation comes back — the induced reading outlasts the
+//              window and gets believed.
+//  TOO LONG    A genuine refill or a genuine empty coil takes this long plus
+//              PAD_SWITCH_DEBOUNCE_MS to be noticed. At 600 ms that is about
+//              a second in the worst case, which nobody can perceive.
+//  CONSOLE     none — needs a reflash
+const uint32_t INHIBIT_SETTLE_MS = 600;
+
+// ---------------------------------------------------------------------------
 //  IR_STUCK_WARN_MS — nag about something sitting in the chute
 // ---------------------------------------------------------------------------
 //  WHAT        If the beam reads BLOCKED for this long while the machine sits
@@ -1046,6 +1089,11 @@ bool motorRunning = false;
 uint32_t motorOnSince = 0;
 uint32_t lastMotorRunMs = 0;  // how long the last run lasted
 uint32_t mutedMotorMs = 0;    // total motor time since the coin line was muted
+uint32_t inhibitChangedMs = 0; // when the inhibit relay was last driven to a
+                               // NEW level. Two things hang off it: the stock
+                               // switch is deaf for INHIBIT_SETTLE_MS after it,
+                               // and the slot is never re-opened sooner than
+                               // that after it was closed.
 uint32_t slowestDropMs = 0;   // worst delivery this session, sets the timeout
 
 // Counters. RAM only, and reset on every boot. The meter balance is the
@@ -1125,6 +1173,13 @@ bool padsRaw = true;
 bool padsStable = true;
 uint32_t padsChangedMs = 0;
 bool stockWatch = false; // console command  k
+
+// Stock-switch flap detector. A coil being refilled changes state once or
+// twice. A line picking up the relay changes state over and over, and that
+// pattern is worth shouting about because it is the one that resets the board.
+uint16_t stockFlaps = 0;        // settled changes inside the current window
+uint32_t stockFlapWindowMs = 0; // when the current 60 s window started
+bool stockFlapWarned = false;   // warn once per window, not once per flap
 uint32_t emptyRotateMs = 0;
 uint8_t emptyMsgIdx = 0;
 
@@ -1546,6 +1601,28 @@ void motorOff()
 //  credit is never quietly timed out. See ST_DISPENSING and ST_EMPTY.
 void coinAcceptorAllow(bool allow)
 {
+  uint32_t now = millis();
+
+  //  ONE-WAY RATE LIMIT. Closing the slot happens on the instant, always.
+  //  Re-opening it waits until INHIBIT_SETTLE_MS has passed since the relay
+  //  last moved.
+  //
+  //  This is deliberately asymmetric, because the two directions are not
+  //  equally dangerous. Blocking money a moment early costs nothing. Letting
+  //  money in a moment early is how a machine takes a coin it cannot honour.
+  //  So the delay only ever applies to the direction that risks the customer's
+  //  money, and never to the direction that protects it.
+  //
+  //  It also drains the oscillation described at INHIBIT_SETTLE_MS: a relay
+  //  that cannot be re-energised for 600 ms cannot chatter at several hertz,
+  //  whatever the stock line does.
+  //
+  //  Nothing is lost by returning here. loop() calls this on every single pass
+  //  from one rule, so a deferred open simply happens on a later pass — there
+  //  is no queue to remember and nothing to retry by hand.
+  if (allow && !coinsAllowed && !reached(now, inhibitChangedMs + INHIBIT_SETTLE_MS))
+    return;
+
   bool contactClosed = !allow; // closed == inhibited
   bool energised = INHIBIT_CONTACT_IS_NC ? !contactClosed : contactClosed;
   bool level = (energised == INHIBIT_RELAY_ACTIVE_HIGH);
@@ -1553,6 +1630,7 @@ void coinAcceptorAllow(bool allow)
   if (allow != coinsAllowed)
   {
     coinsAllowed = allow;
+    inhibitChangedMs = now; // starts the stock switch's deaf window
     // A relay coil collapsing kicks the rail. Treat the display as suspect.
     lcdNeedsReinit = true;
 
@@ -1850,25 +1928,102 @@ bool padSeen()
   return irStable;
 }
 
+// Count a settled stock change and complain when they come too fast to be a
+// person refilling a coil. Six in a minute is not a stack of pads settling —
+// it is a wire, and the log should say so rather than leave somebody watching
+// OUT OF STOCK scroll past wondering whether the switch is faulty.
+void noteStockFlap(uint32_t now)
+{
+  if (stockFlapWindowMs == 0 || sinceMs(now, stockFlapWindowMs) > 60000)
+  {
+    stockFlapWindowMs = now;
+    stockFlaps = 0;
+    stockFlapWarned = false;
+  }
+  stockFlaps++;
+
+  if (stockFlaps >= 6 && !stockFlapWarned)
+  {
+    stockFlapWarned = true;
+    LOGLN();
+    LOGLN(F("!! STOCK LINE UNSTABLE — 6 changes in a minute."));
+    LOGLN(F("!! A coil being refilled changes once. This is electrical."));
+    LOGLN(F("!!   - run the stock switch wire away from the relay wiring"));
+    LOGLN(F("!!   - give the relay module its own decoupling"));
+    LOGLN(F("!!   - make the grounds meet at one point, not in a daisy chain"));
+    LOGLN(F("!! The firmware is already ignoring the stock line for "));
+    LOG(F("!! "));
+    LOG(INHIBIT_SETTLE_MS);
+    LOGLN(F(" ms after every relay move, which is a plaster, not a cure."));
+    LOGLN();
+  }
+}
+
+// How long the stock switch has to hold a new reading before it is believed.
+//
+// Normally PAD_SWITCH_DEBOUNCE_MS. Once the line has proved itself unstable it
+// becomes ten times that, and this is the guard that actually stops the reset
+// loop rather than merely slowing it down.
+//
+// The reasoning: the deaf window and the rate limit together cut the
+// oscillation from several hertz to about one, but they cannot end it, because
+// an induced reading that outlasts 600 + 400 ms is still believed. What
+// separates the two causes is TIME, and only time. A coil that has genuinely
+// run out stays empty — four seconds, four hours, until somebody refills it.
+// A line following a relay changes back within tens of milliseconds of the
+// coil letting go. So a four-second confirmation is invisible to the real
+// event and impossible for the fake one.
+//
+// It escalates rather than shipping at 4 s for everyone, because a machine
+// with clean wiring should not wait four seconds to notice it is empty. The
+// penalty only lands on a machine that has earned it, and it lifts by itself
+// when the flap window expires quietly.
+uint32_t stockDebounceMs()
+{
+  return stockFlapWarned ? (PAD_SWITCH_DEBOUNCE_MS * 10) : PAD_SWITCH_DEBOUNCE_MS;
+}
+
 // True when there are pads left to dispense. Bypassed entirely, and always
 // true, until PAD_SWITCH_FITTED says the switch actually exists.
+//
+// Two filters, in this order, and the order matters:
+//
+//   1. DEAF WINDOW.  For INHIBIT_SETTLE_MS after the inhibit relay moves, the
+//      pin is not read at all and the debounce clock is held at now. A change
+//      induced by the relay therefore cannot be seen, and a change that is
+//      still there when the window closes still has to survive step 2 in full.
+//      Read the comment at INHIBIT_SETTLE_MS for what this actually fixed.
+//
+//   2. DEBOUNCE.     The reading must then hold for PAD_SWITCH_DEBOUNCE_MS.
+//
+// Both are wrap-safe: sinceMs() and reached(), never a bare subtraction
+// against a stamp that may have been written later in the same pass.
 bool padsPresent()
 {
   if (!PAD_SWITCH_FITTED)
     return true;
 
+  uint32_t now = millis();
+
+  if (sinceMs(now, inhibitChangedMs) < INHIBIT_SETTLE_MS)
+  {
+    padsRaw = padsStable;  // forget any half-formed change
+    padsChangedMs = now;   // and make the next one start its clock from here
+    return padsStable;
+  }
+
   bool level = (digitalRead(PIN_PADS) == LOW);
   bool present = PADS_PRESENT_IS_LOW ? level : !level;
-  uint32_t now = millis();
 
   if (present != padsRaw)
   {
     padsRaw = present;
     padsChangedMs = now;
   }
-  else if (padsRaw != padsStable && (now - padsChangedMs) >= PAD_SWITCH_DEBOUNCE_MS)
+  else if (padsRaw != padsStable && reached(now, padsChangedMs + stockDebounceMs()))
   {
     padsStable = padsRaw;
+    noteStockFlap(now);
   }
   return padsStable;
 }
@@ -2958,6 +3113,17 @@ void printStatus()
   LOGLN(F(" pulses discarded"));
   if (noisePulses > 0)
     LOGLN(F("  (any at all means the suppression is not finished)"));
+  //  Same idea as motor noise, for the other wire that has been picking up the
+  //  relays. A refill is one change. A handful in a minute is a wiring fault,
+  //  and it is the one that reset this board mid-self-test.
+  if (PAD_SWITCH_FITTED)
+  {
+    LOG(F("  stock changes: "));
+    LOG(stockFlaps);
+    LOGLN(F(" in the last minute"));
+    if (stockFlaps >= 6)
+      LOGLN(F("  !! That is the relay moving the stock line, not pads moving."));
+  }
   LOGLN();
   LOG(F("  uptime       : "));
   LOG((millis() - bootMs) / 1000);
@@ -3337,12 +3503,15 @@ void handleCommand(char *s)
     LOGLN(F("                 its ground is common with the ESP32's."));
     LOGLN(F("  One click,   = a 5 V active-low module cannot be released by"));
     LOGLN(F("  then stuck     3.3 V. It needs an NPN — see README."));
+    // The hold is longer than INHIBIT_SETTLE_MS on purpose. Re-opening the
+    // slot is rate-limited by that constant, so a shorter hold here would
+    // silently skip every second click and make a working relay sound dead.
     for (uint8_t i = 0; i < 3; i++)
     {
       coinAcceptorAllow(false);
-      holdFor(450);
+      holdFor(INHIBIT_SETTLE_MS + 150);
       coinAcceptorAllow(true);
-      holdFor(450);
+      holdFor(INHIBIT_SETTLE_MS + 150);
     }
     LOGLN(F("Done. loop() puts it back to whatever the state calls for."));
     break;
