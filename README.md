@@ -432,7 +432,7 @@ acceptor ──[ 1 kΩ ]──┬── GPIO 18
                     GND
 ```
 
-10 µs time constant — far below the 50–105 ms between real coin pulses, so it
+10 µs time constant — far below the 155 ms between real coin pulses, so it
 strips the fast induced edges without touching anything real.
 
 Keep this in reserve. The motor capacitor is the better place to start because
@@ -487,7 +487,7 @@ and every arc is a small radio transmitter. The standard suppression network:
 **If the motor cap alone does not get you to zero**, the complementary fix is
 at the other end: filter the coin input. A series 1 kΩ from the acceptor into
 GPIO 18 with 10 nF to ground gives a 10 µs time constant — far below the
-50–105 ms between real coin pulses, so it removes the fast induced edges
+155 ms between real coin pulses, so it removes the fast induced edges
 without touching anything real.
 
 Wiper motors are often sold with this network already fitted inside the
@@ -750,8 +750,8 @@ That test is half the reason this machine exists.
 full:
 
 ```
-COIN IN      : 20 pulses
-PULSE TIMING : 1880 ms burst, gaps 94-99 ms
+COIN IN      : 10 pulses
+PULSE TIMING : 1396 ms burst, gaps 155-156 ms
 RECOGNISED   : KSH 20  (worth KSH 20)
 CREDIT NOW   : KSH 20 of KSH 20
 MEANING      : price met
@@ -842,8 +842,8 @@ Every coin also reports its own pulse timing, which is what tells you whether
 `COIN_GAP_MS` is safe:
 
 ```
-COIN IN      : 40 pulses
-PULSE TIMING : 3840 ms burst, gaps 92-104 ms
+COIN IN      : 20 pulses
+PULSE TIMING : 2946 ms burst, gaps 155-156 ms
 ```
 
 The gap has to sit in a window with a wall on each side. Too **low** and one

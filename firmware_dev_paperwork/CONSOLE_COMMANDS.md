@@ -67,6 +67,7 @@ timeout from the picture entirely without a reflash.
 | `v<n>` | Pretend an `n`-pulse coin went in |
 | `n` | Click the inhibit relay 3× — does it actually move? |
 | `n0` / `n1` | Hold the inhibit pin LOW / HIGH to read the relay's polarity |
+| `P<s>` | **Coin probe**: waits up to `<s>` seconds (default 30) for one coin, samples GPIO 18 every ~20 µs and prints every LOW and HIGH period beside what the interrupt counted. The two numbers must match. Reads the pin only; the coin is counted and banked as normal. Found the double-counting fault on 2026-10-01 |
 | `l` | Rebuild the LCD and draw a test pattern |
 | `b` | Buzzer test |
 
@@ -93,8 +94,8 @@ nothing automatic uses either.
 
 ```
 AT           : 412 s since boot,  9 s after the previous coin
-COIN IN      : 20 pulses
-PULSE TIMING : 1447 ms burst, gaps 49-106 ms
+COIN IN      : 10 pulses
+PULSE TIMING : 1396 ms burst, gaps 155-156 ms
 RECOGNISED   : KSH 20  (worth KSH 20)
 CREDIT NOW   : KSH 20 of KSH 20
 MEANING      : price met

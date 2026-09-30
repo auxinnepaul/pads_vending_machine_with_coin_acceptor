@@ -275,10 +275,14 @@ struct CoinDef
 
 const CoinDef COIN_TABLE[] = {
     //  pulses   value   name
-    {2, 5, "KSH 5"},
-    {10, 10, "KSH 10"},
-    {20, 20, "KSH 20"}, // two 20s taught as one channel, or delete
-    {40, 40, "KSH 40"}, // delete any line you have not taught
+    {1, 5, "KSH 5"},
+    {5, 10, "KSH 10"},
+    {10, 20, "KSH 20"}, // two 20s taught as one channel, or delete
+    {20, 40, "KSH 40"}, // delete any line you have not taught
+    // Measured on the raw waveform with console  P  (2026-10-01): each pulse
+    // is 50 ms LOW then 105 ms HIGH. An earlier table of 2 / 10 / 20 / 40 was
+    // exactly double, because every pulse was being counted twice; see
+    // COIN_PULSE_DEBOUNCE_MS.
 };
 const uint8_t COIN_TABLE_LEN = sizeof(COIN_TABLE) / sizeof(COIN_TABLE[0]);
 
@@ -490,32 +494,49 @@ const uint32_t FAULT_ROTATE_MS = 2000;   // LCD line 2 rotation
 // ---------------------------------------------------------------------------
 //  COIN_PULSE_DEBOUNCE_MS — noise filter on each individual coin pulse
 // ---------------------------------------------------------------------------
-//  WHAT        The acceptor's output can ring on each edge. Two edges closer
-//              together than this are treated as one pulse. This is NOT the
-//              gap between coins — that is COIN_GAP_MS below.
-//  TOO SHORT   Ringing gets counted as extra pulses. A KSh 20 coin (20 pulses)
-//              reads as 23, matches nothing in the table, and the customer's
-//              money is taken for a coin the machine cannot price.
-//  TOO LONG    Real pulses get swallowed. The same coin reads LOW, maybe 14
-//              pulses, which again matches nothing — or worse, matches a
-//              CHEAPER coin and short-changes the customer.
-//  HOW TO SET  Leave it at 20 unless coin counts come out wrong. Every coin
-//              prints a PULSE TIMING line showing the tightest gap it saw; if
-//              that number gets close to this one, lower this.
+//  WHAT        After a counted pulse, ignore every falling edge for this
+//              long. Two falling edges closer together than this are one
+//              pulse. This is NOT the gap between coins — that is COIN_GAP_MS.
+//
+//  WHY 75 AND NOT 20 — measured, and it cost real money to find.
+//              The interrupt is set to FALLING, but on the ESP32 a rising
+//              edge can also fire it: a glitch of a few microseconds on the
+//              way up is enough. This acceptor's pulse is 50 ms LOW then
+//              105 ms HIGH, so that false count lands exactly 50 ms after the
+//              real one, where a 20 ms debounce does not reach it.
+//
+//              With the coin wired straight to the pin, EVERY rising edge fired
+//              it, so every coin read exactly double and the coin table was
+//              calibrated to the doubled numbers (2 / 10 / 20 / 40). The PC817
+//              changed the edge shape and the false count became occasional:
+//              a KSh 10 then read anywhere from 7 to 10, and coins were taken
+//              and not credited. Console  P  recorded the raw waveform and
+//              showed 5 clean pulses where the interrupt had counted 9.
+//
+//              75 ms sits between the false count (50 ms after a real one) and
+//              the next real pulse (155 ms after it): 25 ms of margin on one
+//              side, 80 ms on the other.
+//  TOO SHORT   The false count on the rising edge comes back: coins read high
+//              and at random.
+//  TOO LONG    Real pulses get swallowed. At 155 ms or more, every second real
+//              pulse is lost.
+//  HOW TO SET  Run  P  and drop a coin. Set this between the LOW time and the
+//              full LOW+HIGH period, with room on both sides. If the acceptor's
+//              pulse speed setting is ever changed, measure again.
 //  CONSOLE     none — needs a reflash
-const uint32_t COIN_PULSE_DEBOUNCE_MS = 20;
+const uint32_t COIN_PULSE_DEBOUNCE_MS = 75;
 
 // ---------------------------------------------------------------------------
 //  COIN_GAP_MS — the silence that means "that coin is finished, count it"
 // ---------------------------------------------------------------------------
 //  WHAT        One coin is a burst of pulses. This is how long the line must
 //              stay quiet before the firmware decides the burst has ended and
-//              adds up what it counted. A KSh 40 coin is 40 pulses and its
-//              burst runs for seconds, so this matters more here than on a
-//              machine that only takes one coin type.
-//  TOO SHORT   A single coin gets split in two. A KSh 20 (20 pulses) reads as
-//              2 + 18: the first half is priced as KSh 5, the second half is
-//              unknown, and the customer is short-changed by 15 shillings.
+//              adds up what it counted. A KSh 40 coin is 20 pulses, 155 ms
+//              apart, so its burst runs for about three seconds; this matters
+//              more here than on a machine that only takes one coin type.
+//  TOO SHORT   A single coin gets split in two. A KSh 20 (10 pulses) reads as
+//              1 + 9: the first part is priced as KSh 5, the rest is unknown,
+//              and the customer is short-changed by 15 shillings.
 //  TOO LONG    Two coins inserted quickly get merged into one burst. Two KSh 5
 //              coins become one 4-pulse "coin" that is in no table, and the
 //              money is gone. The acceptor cannot physically deliver two coins
@@ -524,9 +545,13 @@ const uint32_t COIN_PULSE_DEBOUNCE_MS = 20;
 //              WIDEST gap you see and roughly double it — that is your floor.
 //              Then insert two coins as fast as the acceptor will take them
 //              and confirm they still read as two. Anywhere comfortably
-//              between those results is right. 250 ms suits most units.
+//              between those results is right. On this acceptor pulses are
+//              155 ms apart (measured with  P ), so the floor is about 310 ms;
+//              400 ms leaves margin below the 600 ms ceiling. The old 250 ms
+//              only worked while the rising edge was also being counted,
+//              which halved the apparent gap.
 //  CONSOLE     g<ms>   e.g.  g350
-uint32_t COIN_GAP_MS = 250;
+uint32_t COIN_GAP_MS = 400;
 
 // ---------------------------------------------------------------------------
 //  DISPENSE_TIMEOUT_MS — how long to wait before deciding NOTHING DROPPED
@@ -1041,7 +1066,7 @@ volatile bool isrSeenOne = false;
 volatile uint32_t isrTotal = 0; // every pulse ever, for diagnostics
 portMUX_TYPE coinMux = portMUX_INITIALIZER_UNLOCKED;
 
-// Gap statistics for the burst being counted right now. With a 40-pulse coin
+// Gap statistics for the burst being counted right now. With a 20-pulse coin
 // in the table these are the numbers that decide whether COIN_GAP_MS is safe,
 // and there is no other way to see them. Reported with every coin.
 // While this is true the coin interrupt counts nothing. Set the moment the
@@ -1204,16 +1229,17 @@ uint32_t faultRotateMs = 0;
 //  HOW A MULTI-COIN ACCEPTOR TALKS
 //  It does not say "that was twenty shillings". It pulls one line LOW a fixed
 //  number of times, quickly, and the NUMBER OF PULSES identifies which coin it
-//  was. On this machine: 2 pulses = KSh 5, 10 = KSh 10, 20 = KSh 20,
-//  40 = KSh 40. See SECTION 2.
+//  was. On this machine: 1 pulse = KSh 5, 5 = KSh 10, 10 = KSh 20,
+//  20 = KSh 40. See SECTION 2.
 //
 //  So reading a coin is two jobs, and they are split in two on purpose:
 //
 //    onCoinPulse()  runs in an interrupt, on the falling edge of every pulse.
 //                   It does the absolute minimum — count, timestamp, return —
 //                   because an interrupt that dawdles loses the next pulse.
-//                   It also debounces, so electrical ringing on one edge is
-//                   not counted twice (COIN_PULSE_DEBOUNCE_MS).
+//                   It also debounces, so one pulse is never counted twice,
+//                   including the false FALLING interrupt an ESP32 can fire on
+//                   the pulse's rising edge (COIN_PULSE_DEBOUNCE_MS).
 //
 //    takeCoin()     runs in loop(). It watches for the line to go quiet for
 //                   COIN_GAP_MS, which is what "that coin is finished" looks
@@ -1221,7 +1247,7 @@ uint32_t faultRotateMs = 0;
 //                   priced.
 //
 //  It also measures the gaps between pulses as it goes, because with a
-//  40-pulse coin those numbers are the only way to know whether COIN_GAP_MS
+//  20-pulse coin those numbers are the only way to know whether COIN_GAP_MS
 //  has enough margin on both sides. They print with every coin.
 //
 void IRAM_ATTR onCoinPulse()
@@ -2412,7 +2438,7 @@ void reportCoin(uint16_t pulses, const CoinDef *coin, const CoinBurst *b = nullp
   LOG(pulses);
   LOGLN(pulses == 1 ? F(" pulse") : F(" pulses"));
 
-  // With a 40-pulse coin in the table, these two numbers are what decide
+  // With a 20-pulse coin in the table, these two numbers are what decide
   // whether COIN_GAP_MS is safe, and there is no other way to see them.
   if (b && b->pulses > 1)
   {
@@ -4138,7 +4164,7 @@ void loop()
   // ---- Wake on the FIRST pulse, not on the finished coin ----
   //
   //  takeCoin() does not hand a coin over until the acceptor has been quiet
-  //  for COIN_GAP_MS, and on a 40-pulse coin that is seconds away. Watching
+  //  for COIN_GAP_MS, and on a 20-pulse coin that is seconds away. Watching
   //  the raw pulse counter instead lights the screen the instant her coin
   //  registers, which is when she is looking at it.
   uint32_t pulsesNow = isrTotal;

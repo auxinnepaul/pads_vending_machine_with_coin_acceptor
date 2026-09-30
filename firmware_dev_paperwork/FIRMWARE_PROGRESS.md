@@ -34,7 +34,9 @@ the next step.
 
 ### Verified on hardware ✅
 
-- All four coins decode: 2 / 10 / 20 / 40 pulses → KSh 5 / 10 / 20 / 40
+- All four coins decode: **1 / 5 / 10 / 20** pulses → KSh 5 / 10 / 20 / 40.
+  Re-verified 2026-10-01 through the PC817 after the double-count fix. The
+  earlier 2 / 10 / 20 / 40 figures were every pulse counted twice
 - Accumulation: 4 × KSh 5 and 2 × KSh 10 both reach KSh 20 and vend
 - KSh 40 vends two pads back to back
 - Change carries across a vend and lands on the correct screen
@@ -61,8 +63,8 @@ the next step.
 | | |
 |---|---|
 | **Active-HIGH inhibit relay** on NC | Self-test reports it correctly and the firmware drives it HIGH after boot. `n1` / `n0` not yet run |
-| **Inhibit-relay / stock-switch guard** (`INHIBIT_SETTLE_MS`, flap detector) | **Flashed and running**, still uncommitted. Not yet exercised: needs the relay switching while the stock line is watched |
-| **Coin decoding through the PC817** | Idle level correct. No coin dropped on the new board yet |
+| **Inhibit-relay / stock-switch guard** (`INHIBIT_SETTLE_MS`, flap detector) | Running since the first boot, still uncommitted. No stock-line change through 24 relay clicks and five vends |
+| **Double-count fix + `P` probe** | Verified on the bench, still uncommitted (see the 2026-10-01 test log) |
 
 ### Pending ⏳
 
@@ -78,12 +80,10 @@ the next step.
 
 ### Next session should
 
-1. **`n1` / `n0`** on the inhibit relay: energises on `n1`, releases on `n0`.
-   Press EN a few more times with the acceptor connected: still no click
-   before the chirp.
-2. **Repeat the coin tests through the PC817:** all four coins, accumulation
-   (4 × 5, 2 × 10), KSh 40. Check the 3V3 pin holds above 3.2 V while the
-   motor runs.
+1. ~~Inhibit relay click test and EN resets~~ ✅ 2026-10-01
+2. ~~Coin tests through the PC817~~ ✅ 2026-10-01, after finding and fixing
+   the double count. Still to do: check the 3V3 pin holds above 3.2 V while
+   the motor runs, and two coins inserted fast still read as two.
 3. **`s` for motor noise** with the 47 nF and 1N5408 fitted.
 4. **Watch the stock line while the inhibit relay switches.** If the guard
    holds and the log shows no flapping, **commit the guard**.
@@ -149,10 +149,147 @@ After the self-test the firmware drove GPIO 19 HIGH and enabled the acceptor.
 - After 2 minutes idle the backlight goes off (`BACKLIGHT_TIMEOUT_MS`); the
   text is still readable in the dark. Intended: a coin or the button wakes it.
 
-### Not yet done
+### Bench test log
 
-Coins through the PC817, `n1`/`n0`, motor noise with the new suppression, and
-exercising the guard. See the RESUME block.
+**Test 1 — inhibit relay ✅**
+
+- `n` click test run four times. Each run drove GPIO 19 LOW (released, slot
+  blocked) and HIGH (energised, slot live) three times; the relay clicked
+  every time. `n0`/`n1` were not run separately: `n` drives both levels.
+- Three EN resets: identical `SELF-TEST: PASS`, the inhibit pin LOW and coins
+  inhibited during the test, GPIO 19 driven HIGH only after `Ready`. No click
+  before the chirp.
+- **No stock-switch change during 24 relay switches.** Before the guard and
+  the new relay, relay switching flipped the stock line and reset the board
+  twice. First evidence the guard (flashed, uncommitted) is holding. Idle
+  only; not yet seen during a vend.
+
+**Test 2 — coins through the PC817** ⏳ in progress
+
+- **Step 1, one KSh 5 ✅.** `2 pulses`, `50 ms burst, gaps 50-50 ms`,
+  recognised KSh 5, credit KSh 5 of 20, no vend. The first coin decoded
+  through the optocoupler: clean, bounce-free pulse edges.
+- **Observed:** ~60 garbled characters on the serial monitor just before the
+  coin report, where its separator line starts. Suspected cause: the
+  acceptor's gate solenoid fires on every coin, and its ground disturbance
+  reaches the USB serial link, since the ESP32 ground is joined to the PC's
+  through the USB cable. The coin decoded correctly regardless. **It did not
+  repeat on any later coin**, so the per-coin solenoid explanation is
+  withdrawn; most likely a one-off such as the serial monitor connecting.
+  LCD showed KSh 5 credit and the countdown.
+- **Step 2, three more KSh 5 ✅ for the vend.** Credit 10 → 15 → 20 (gaps
+  50–51 ms), `Motor on — credit met`, `PAD DELIVERED in 1345 ms` (finger at
+  the sensor). No phantom coins after the motor ran; no stock-line change
+  during the vend.
+- **❌ DEFECT under investigation: a KSh 5 coin swallowed twice.** The
+  builder's account: the step-1 coin was then refused twice (came back out;
+  no pulses logged, so a refused coin produces nothing, which is correct).
+  A second KSh 5 was inserted five times: three times it sent 2 pulses and
+  was credited, **twice it sent 1 pulse, was reported as not in the table,
+  and went into the cash box.** KSh 10 lost. Both events passed the 20 ms
+  debounce, so they were real low periods, not spikes.
+
+  The ISR (falling edge, 20 ms debounce, pulses 50 ms apart) counts both
+  pulses as long as the line returns high between them. Same coin, different
+  counts, so it is not a coin that simply maps to an unused channel. Two
+  candidate causes:
+
+  1. **Acceptor programming.** It has 6 channels; COIN_TABLE uses 4. The
+     table's own instructions suggest 1 pulse for the cheapest coin. If KSh 5
+     was ever taught into a 1-pulse channel as well as the 2-pulse one, a KSh 5
+     can match either. Fix on the acceptor.
+  2. **A pulse lost in the new signal path** (the line not returning high
+     between pulses). New wiring, so a fair suspect, but the PC817 switches
+     in microseconds against a ~25 ms gap. Fix in the circuit.
+
+  **Discriminating test:** a lost pulse would hit every coin (10 → 9,
+  20 → 19); a channel mismatch only produces specific counts. Running KSh 10
+  ×5, KSh 20 ×5, KSh 40 ×2, and asking whether KSh 5 was taught into more
+  than one channel.
+
+  **Result: it is pulse loss, on every coin. Cause 1 ruled out.** Every coin
+  went into the cash box; none was rejected.
+
+  | Coin | Expected | Counted |
+  |---|---|---|
+  | KSh 5 | 2 | 2, 2, 1, 2, 1, 2 (second run) |
+  | KSh 10 | 10 | 10, 9, 8, 7, 8, 7, 8, 8, 7, 8, 9 |
+  | KSh 20 | 20 | 16, 17, 19, 16, 15 |
+  | KSh 40 | 40 | 33, 37 |
+
+  Always short, never over; larger coins lose more. Gaps of 155 ms now appear
+  where the acceptor's normal spacing is 50–105 ms, i.e. a pulse missing in
+  between. **Retuning COIN_TABLE cannot fix this**: the same coin arrives with
+  different counts. Nothing like this was recorded with the direct wiring, so
+  the new signal path is the prime suspect.
+
+  Not yet known: whether the missing pulses never pull GPIO 18 low, or the pin
+  fails to return high between pulses. Those need opposite resistor changes.
+  **Added console command `P`** (uncommitted, compiles clean): samples GPIO 18
+  every ~20 µs for one coin and prints each LOW/HIGH period beside what the
+  interrupt counted. Reads the pin only; counting and banking unchanged.
+
+  **Separate finding:** the help lists `k`, `l` and `L`, but none is
+  implemented, in HEAD or the working tree. Typing them gives "Unknown
+  command". Backlog.
+
+  **✅ ROOT CAUSE FOUND with `P` — the pulses were never lost; the
+  firmware was counting extra ones.** One KSh 10 under the probe:
+
+  ```
+    #   LOW ms   then HIGH ms
+     1  50.4     104.6
+     2  50.4     104.7
+     3  50.4     104.6
+     4  50.4     104.8
+     5  50.4     -  (end of coin)
+    raw LOW periods seen : 5
+    interrupt counted    : 9
+  ```
+
+  Five clean pulses on the wire; nine counts from the interrupt. The
+  interrupt is FALLING, but a few-microsecond glitch on the ESP32's rising
+  edge can fire it too, and that false count lands 50 ms after the real one,
+  past the 20 ms debounce. **With the direct wiring it fired on every rising
+  edge, so every coin read exactly double and COIN_TABLE was calibrated to
+  the doubled counts (2/10/20/40).** The "gaps 50–105 ms" recorded back then
+  (fall→rise, rise→next fall) was the fingerprint all along. The PC817 changed
+  the edge shape so the false count became occasional, which is what
+  exposed it. The data fits exactly: counts were never below the true number
+  and never above double (KSh 10: 5 real, read 7–10; KSh 40: 20 real, read
+  33 and 37).
+
+  My earlier "pulses are being lost in the signal path" was wrong. The
+  builder's instinct that the table needed changing was right, for a
+  different reason.
+
+  **Fix (uncommitted, compiles clean, flashing next):**
+  - `COIN_PULSE_DEBOUNCE_MS` 20 → **75**: between the false count (+50 ms)
+    and the next real pulse (+155 ms).
+  - `COIN_GAP_MS` 250 → **400**: real pulses are 155 ms apart, so twice the
+    widest gap is 310 ms; still under the 600 ms ceiling.
+  - `COIN_TABLE` → **1 / 5 / 10 / 20** pulses for KSh 5 / 10 / 20 / 40.
+  - Every comment stating the old counts updated.
+  All existing self-test and per-coin sanity checks pass with these values.
+
+**Test 2 result after the fix ✅** (flashed with debounce 75 ms, gap 400 ms,
+table 1 / 5 / 10 / 20):
+
+| Check | Result |
+|---|---|
+| `P` with a KSh 5 | raw LOW periods 1, interrupt counted 1 |
+| KSh 5 × 4 | `1 pulse` each, 5 → 20, vend (1452 ms) |
+| KSh 10 × 2 | `5 pulses` each, gaps 155–155 ms, vend (2108 ms) |
+| KSh 20 | `10 pulses`, gaps 155–156 ms, vend (1307 ms) |
+| KSh 40 | `20 pulses`, 2946 ms burst, two pads back to back (1163, 1902 ms) |
+| Gap warnings | none |
+
+Every gap is now the true 155 ms; the 50 and 105 ms gaps that marked the
+double count are gone. Before the fix the KSh 10 read wrong on 10 of 11
+drops. Drop times are a finger at the sensor and mean nothing yet. The
+50-cycle soak is the full proof.
+
+**Test 3 — motor noise (`s`)** ⏳
 
 ---
 

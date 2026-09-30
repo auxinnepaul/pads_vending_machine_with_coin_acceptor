@@ -37,7 +37,7 @@ The sketch that goes with this wiring is the one in this repo,
 
 | GPIO | Connects to | Firmware mode | External parts | Status |
 |---|---|---|---|---|
-| **18** | PC817 **pin 4** (collector) | `INPUT_PULLUP`, interrupt on `FALLING` | 10 kΩ from pin 4 to **3V3** | ✅ metered; self-test reads idle HIGH. Coins not yet dropped |
+| **18** | PC817 **pin 4** (collector) | `INPUT_PULLUP`, interrupt on `FALLING`, 75 ms debounce | 10 kΩ from pin 4 to **3V3** | ✅ all four coins decode exactly |
 | **19** | Inhibit relay (relay 2) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot; self-test correct. `n1`/`n0` not yet run |
 | **26** | Motor relay (relay 1) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot |
 | **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | — | ✅ self-test: chute clear |
@@ -388,7 +388,8 @@ it holds COM3. In order:
 5. `n1` then `n0`: the inhibit relay energises on `n1` and releases on `n0`.
 6. Press EN a few times with the acceptor connected: **no relay may click**
    during boot.
-7. Drop each coin: 2 / 10 / 20 / 40 pulses decode to KSh 5 / 10 / 20 / 40.
+7. Drop each coin: 1 / 5 / 10 / 20 pulses decode to KSh 5 / 10 / 20 / 40,
+   the same count every time, every gap ~155 ms. ✅ 2026-10-01
    Then accumulation (4 × 5 and 2 × 10) and a KSh 40 double vend.
 8. `s`: check `motor noise` with the 47 nF and 1N5408 fitted.
 
@@ -405,7 +406,7 @@ it holds COM3. In order:
 | Pull-downs on GPIO 19 and 26 | ✅ fitted |
 | Active-HIGH inhibit relay on NC | ✅ holds through boot; `n1`/`n0` next |
 | New ESP32 | ✅ flashed, self-test PASS |
-| Coins through the PC817 | 🔌 idle level correct, no coin dropped yet |
+| Coins through the PC817 | ✅ all four coins exact after the double-count fix; five vends |
 | TVS on 12 V block | ⏳ not bought |
 | 100 µF + 100 nF at relay module VCC | ⏳ |
 | 100 nF at acceptor end | ⏳ optional |

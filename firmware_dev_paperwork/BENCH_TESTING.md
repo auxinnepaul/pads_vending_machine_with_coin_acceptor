@@ -44,15 +44,17 @@ cannot take money it could not price.
 
 ```
 AT           : 412 s since boot,  9 s after the previous coin
-COIN IN      : 20 pulses
-PULSE TIMING : 1447 ms burst, gaps 49-106 ms
+COIN IN      : 10 pulses
+PULSE TIMING : 1396 ms burst, gaps 155-156 ms
 RECOGNISED   : KSH 20  (worth KSH 20)
 CREDIT NOW   : KSH 20 of KSH 20
 MEANING      : price met
 WILL VEND    : 1 pad
 ```
 
-Want **2 / 10 / 20 / 40 pulses** with gaps around 50–105 ms.
+Want **1 / 5 / 10 / 20 pulses** with **every gap about 155 ms**. A mix of
+50, 105 and 155 ms gaps, or the same coin giving different counts, means
+pulses are being counted twice: run `P` and see `COIN_PULSE_DEBOUNCE_MS`.
 
 Then **two coins as fast as the acceptor will take them** — they must still read
 as two. That is the other wall on `COIN_GAP_MS`.
@@ -211,7 +213,7 @@ Without a chute, using a finger, to prove the tool before trusting it:
 | Coin pulse swing | ≤ 3.3 V |
 | Reset with acceptor connected | no relay click |
 | Self-test | `SELF-TEST: PASS` |
-| Coin pulses | 2 / 10 / 20 / 40, gaps 50–105 ms |
+| Coin pulses | 1 / 5 / 10 / 20, every gap ~155 ms, same count every time |
 | Two fast coins | still read as two |
 | Accumulation | 5→10→15→20, vend |
 | `motor noise` in `s` | **0** — anything above means suppression is unfinished |

@@ -108,8 +108,11 @@ purpose:
   `COIN_GAP_MS`, which is what "that coin is finished" looks like, and only
   then hands the count over to be priced.
 
-Measured on this machine: **2 pulses = KSh 5, 10 = KSh 10, 20 = KSh 20,
-40 = KSh 40**, with 50–105 ms between pulses.
+Measured on this machine: **1 pulse = KSh 5, 5 = KSh 10, 10 = KSh 20,
+20 = KSh 40**. Each pulse is 50 ms LOW then 105 ms HIGH, so 155 ms apart.
+An earlier table of 2 / 10 / 20 / 40 was exactly double: an ESP32 FALLING
+interrupt was also firing on each rising edge. The 75 ms debounce filters it
+(see `COIN_PULSE_DEBOUNCE_MS` and `FIRMWARE_PROGRESS.md`, 2026-10-01).
 
 **The coin line is muted while the motor runs** and for `MOTOR_NOISE_SETTLE_MS`
 after it stops. Switching the coil induces edges on the coin pin that are

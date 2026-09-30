@@ -46,8 +46,8 @@ optional memory this board does not have. Nothing to do with our firmware.
 ### [2] COIN TABLE
 
 ```
-  2 pulses = KSH 5  (KSH 5)
-  20 pulses = KSH 20  (KSH 20)   <- exact price
+  1 pulse  = KSH 5  (KSH 5)
+  10 pulses = KSH 20  (KSH 20)   <- exact price
   price       : KSH 20
   change      : kept on the meter
 ```
@@ -161,8 +161,8 @@ money. If you never see it, the self-test failed and the machine halted.
 
 ```
 AT           : 412 s since boot,  9 s after the previous coin
-COIN IN      : 20 pulses
-PULSE TIMING : 1447 ms burst, gaps 49-106 ms
+COIN IN      : 10 pulses
+PULSE TIMING : 1396 ms burst, gaps 155-156 ms
 RECOGNISED   : KSH 20  (worth KSH 20)
 CREDIT NOW   : KSH 20 of KSH 20
 MEANING      : price met
@@ -170,8 +170,9 @@ WILL VEND    : 1 pad
 LEFT OVER    : KSH 0
 ```
 
-**Expected on this machine:** 2 / 10 / 20 / 40 pulses, gaps 49–106 ms, bursts
-of 50 ms (KSh 5) to 3000 ms (KSh 40).
+**Expected on this machine:** 1 / 5 / 10 / 20 pulses, every gap ~155 ms,
+bursts of 0 ms (KSh 5, a single pulse) to ~2950 ms (KSh 40). Gaps of 50 or
+105 ms mean a pulse is being counted twice: run `P`.
 
 **`AT`** — check this before believing credit vanished for no reason.
 

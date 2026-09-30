@@ -25,6 +25,9 @@ The short version, if you read nothing else:
    close to 5 V on its input to release, so it switches on and stays on. Use
    active-HIGH modules with an ESP32, or drive the input through a transistor
    (lesson 1.4).
+7. **A consistent reading can still be wrong.** The coin table matched the
+   counts perfectly for weeks, and every count was double. Calibrate from the
+   raw signal, not from what your own code reports (lesson 2.10).
 
 ---
 
@@ -366,6 +369,46 @@ a coin.
 it. Show the customer what she can act on; show the technician what they
 need.
 
+### 2.10 The coin table was calibrated to a counting fault
+
+**What happened.** After the PC817 went in, the same coin started giving
+different counts: a KSh 10 read 7, 8, 9 or 10, and coins went into the cash
+box without being credited. It looked like pulses were being lost in the new
+wiring, and that was the diagnosis at first.
+
+**What was really going on.** A console command (`P`) that sampled the raw
+pin showed **5 clean pulses** for a KSh 10, while the interrupt had counted
+**9**. The interrupt is set to trigger on falling edges, but on the ESP32 a
+few-microsecond glitch on a **rising** edge can fire it too. Each pulse is
+50 ms low, so that false count landed 50 ms after the real one, past the
+20 ms debounce.
+
+**Why it went unnoticed for weeks.** With the coin wired straight to the pin,
+the false count fired on **every** rising edge. Every coin read exactly double
+(2 / 10 / 20 / 40 instead of 1 / 5 / 10 / 20), perfectly consistently, so the
+coin table was calibrated to the doubled numbers and everything "worked". The
+PC817 changed the edge shape, the false count became occasional, and only
+then did the counts wander. **The clue had been in the logs all along**: gaps
+of 50 and 105 ms between pulses, which are a pulse's own end and the next
+pulse's start, not two separate pulses.
+
+**The fix.** A 75 ms debounce, which sits between the false count (+50 ms)
+and the next real pulse (+155 ms); the coin gap raised to 400 ms; the table
+set to the real counts. After that every coin read exactly, every time.
+
+**Lessons.**
+- **Calibrate from the raw signal, not from your own counter.** A counter
+  that is wrong in a consistent way produces numbers you can calibrate to,
+  and they will look perfect.
+- **An edge interrupt is not an edge detector you can trust blindly.** Set
+  the debounce from the measured pulse shape (low time and period), not from
+  a generic "ringing" figure.
+- **Build a tool that shows what the hardware is doing** when the counts
+  don't make sense. The `P` probe took minutes to write and settled in one
+  coin what a day of theorising had not.
+- **When a change "breaks" something, check whether it broke it or exposed
+  it.** The optocoupler didn't cause the fault; it made a hidden one visible.
+
 ---
 
 ## Part 3 — Diagnostics and tooling
@@ -451,6 +494,9 @@ This caused more wasted time than any single bug:
   evidence supported".
 - A flyback diode alone was recommended for noise that turned out to be brush
   arcing.
+- Wandering coin counts were diagnosed as "pulses lost in the new wiring".
+  The raw-waveform probe showed the opposite: extra counts from rising edges
+  (lesson 2.10).
 
 **Lesson.** When a question can be answered by a quick test on the bench, do
 the test instead of arguing. Build the measurement first; `n0`/`n1` and the
@@ -509,6 +555,8 @@ data, not as a misunderstanding to correct.
       the two directions differently?
 
 **Firmware habits**
+- [ ] Pulse counts and debounce set from the **raw waveform** (low time,
+      period), measured on the pin, not from what the counter reports
 - [ ] One "now" per loop; wrap-safe time helpers only
 - [ ] Return values of storage and communication calls are checked
 - [ ] Counters feeding money or safety decisions saturate
