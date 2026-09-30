@@ -20,6 +20,7 @@ Client: Rebecca Mpiima · Ref `BT-PADVEND-2026-001` · Firmware v2.0
 | **Bring a machine up, or find the dispense timeout** (the order, what "good" looks like at each step, the soak procedure) | [`BENCH_TESTING.md`](BENCH_TESTING.md) | Whoever is at the bench |
 | **Look up a console command** (all of them, what each is actually for) | [`CONSOLE_COMMANDS.md`](CONSOLE_COMMANDS.md) | Developer / field |
 | **Debug something that is misbehaving** (LCD gibberish, phantom coins, a relay that will not switch, credit that vanishes) | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Whoever is cursing at the machine |
+| **Learn from what went wrong** (three dead boards, the money bugs, the diagnostics that lied, and a checklist for the next build) | [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) | Anyone building this machine, or starting the next project |
 | **Pick the next thing to build** (what is parked, what stage two needs) | [`IMPROVEMENTS_BACKLOG.md`](IMPROVEMENTS_BACKLOG.md) | Whoever is planning the next session |
 
 The [top-level README](../README.md) is the **build guide**: bill of materials,
