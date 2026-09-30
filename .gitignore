@@ -5,3 +5,6 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local-only settings (the service phone number). Never commit.
+service_contact.h

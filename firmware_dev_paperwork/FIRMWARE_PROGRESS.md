@@ -74,7 +74,6 @@ the next step.
 | **100 µF + 100 nF at the relay module VCC** | Not fitted. Part of the physical fix for the relay disturbing the stock switch |
 | **Motor noise → zero** | Re-measure with `s` now the 47 nF and 1N5408 are fitted |
 | **Real drop times** | No chute or panel. Every timing so far is a finger at the IR sensor |
-| **Service phone number** | Still the placeholder `07XX XXX XXX`. The fault screen tells a stuck customer to call it. Set it before the machine goes to a site |
 | **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
 
@@ -90,7 +89,7 @@ the next step.
 4. **Watch the stock line while the inhibit relay switches.** If the guard
    holds and the log shows no flapping, **commit the guard**.
 5. Buy and fit the TVS; fit the relay module decoupling.
-6. Set the real service number.
+6. ~~Set the real service number~~ ✅ 2026-10-01: the client's number, kept in `service_contact.h`, which is **local only and in .gitignore** (copy `service_contact.example.h` to create it). Self-test no longer warns.
 7. Build the chute, load the coil, run `T25`, bake the timeout in.
 8. The 50-cycle soak — that number is what the client actually asked for.
 

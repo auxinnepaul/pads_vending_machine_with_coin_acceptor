@@ -170,6 +170,17 @@
 #include <esp_system.h>
 #include <Preferences.h>
 
+// The service phone number is kept out of git. It lives in service_contact.h
+// next to this sketch, which .gitignore excludes; copy
+// service_contact.example.h to create it. Without it the placeholder below is
+// used and the boot self-test warns.
+#if __has_include("service_contact.h")
+#include "service_contact.h"
+#endif
+#ifndef SERVICE_CONTACT_TEXT
+#define SERVICE_CONTACT_TEXT "07XX XXX XXX"
+#endif
+
 #define FW_VERSION "2.0"
 
 // Declared up here, above everything else, because the Arduino build inserts
@@ -451,7 +462,7 @@ const uint8_t MAX_BUTTON_RETRIES = 3;
 // SIXTEEN CHARACTERS MAXIMUM. The display is 16 x 2 and anything longer is
 // silently cut off, which is worse than a short message.
 //                                 |<-- 16 chars max -->|
-const char *SERVICE_CONTACT      = "07XX XXX XXX";
+const char *SERVICE_CONTACT      = SERVICE_CONTACT_TEXT; // set in service_contact.h
 
 // --- RETRY BUTTON ----------------------------------------------------------
 // Momentary NO button between PIN_CLEAR and GND. Mount it on the FRONT, where
