@@ -11,87 +11,83 @@ compiles is not a thing that works.
 
 # ▶ RESUME HERE
 
-**State as of 2026-10-01.**
+**State as of 2026-10-01, end of day.** Everything is committed and pushed
+(`d125a1d`); the board runs exactly that build plus the local
+`service_contact.h`.
 
 ### ⚡ Switch the 12 V off before plugging or unplugging the coin acceptor
 
-The PC817 now protects the ESP32 from the coin line (metered, see below). The
-TVS for the 12 V rail is **not bought yet**, so the buck is still exposed to
-the worst spikes. Until it is fitted, never connect or disconnect the acceptor
-with power on.
+The PC817 protects the ESP32 from the coin line. The TVS for the 12 V rail is
+**not bought yet**, so the buck is still exposed to the worst spikes.
 
-**Wiring as built: `WIRING.md`.** That is the authoritative pin map and
-diagram set.
+**Wiring as built: `WIRING.md`.** **Lessons so far: `LESSONS_LEARNED.md`.**
 
-**A new board is up and passing its self-test** (2026-10-01): flashed, LCD
-working through the level converter, coin line reading correctly through the
-PC817, no relay click during boot.
-
-The firmware is functionally complete and every coin path was verified on real
-hardware, **with the coin line wired directly to GPIO 18**. The PC817 changes
-that input path, so the coin tests must be repeated on the new board. That is
-the next step.
+**The electronics are done and verified on the bench.** Every coin decodes
+exactly, every vend delivers, the machine cannot open the slot or turn the
+motor while booting, and the display no longer freezes the loop. What is left
+is **mechanical**: a chute, real pads, and the soak.
 
 ### Verified on hardware ✅
 
-- All four coins decode: **1 / 5 / 10 / 20** pulses → KSh 5 / 10 / 20 / 40.
-  Re-verified 2026-10-01 through the PC817 after the double-count fix. The
-  earlier 2 / 10 / 20 / 40 figures were every pulse counted twice
-- Accumulation: 4 × KSh 5 and 2 × KSh 10 both reach KSh 20 and vend
-- KSh 40 vends two pads back to back
-- Change carries across a vend and lands on the correct screen
-- Meter survives a power cut; recovered pad is held and released by button or coin
-- Jam retry, the three-attempt cap, and the customer button
-- Coin-noise muting (the machine no longer spends induced pulses)
-- Shorting the inhibit port by hand inhibits the acceptor, so NC is fail-safe
-- **PC817 coin line (meter only):** 3.29 V idle, 33 mV when held low, no change
-  when the acceptor is unplugged and replugged
-- **Power:** 5.01 V from the buck, Schottky into VIN, bulk caps at the 12 V
-  block and the buck output, 47 nF + 1N5408 at the motor
-- **I²C level converter (meter):** LV1/LV2 3.29 V, HV1/HV2 5.02 V
-- **New ESP32 first boot:** 3V3 at 3.28 V, nothing hot, flashed first time,
-  `SELF-TEST: PASS`. LCD found at 0x27 through the converter and showing the
-  idle screen; GPIO 18 idle HIGH through the PC817; inhibit relay reported
-  active HIGH / NC; stock switch PADS PRESENT; buzzer chirps
-- **Boot window:** no relay click before the self-test chirp, so the
-  pull-downs on GPIO 19 and 26 hold through reset
-- **Backlight sleep:** goes dark after 2 min idle
-  (`BACKLIGHT_TIMEOUT_MS`), characters still readable
-
-### Fitted, not yet run on a board 🔌
-
-| | |
-|---|---|
-| **Active-HIGH inhibit relay** on NC | Self-test reports it correctly and the firmware drives it HIGH after boot. `n1` / `n0` not yet run |
-| **Inhibit-relay / stock-switch guard** (`INHIBIT_SETTLE_MS`, flap detector) | Running since the first boot, still uncommitted. No stock-line change through 24 relay clicks and five vends |
-| **Double-count fix + `P` probe** | Verified on the bench, still uncommitted (see the 2026-10-01 test log) |
+- **Coins:** all four decode exactly through the PC817: **1 / 5 / 10 / 20**
+  pulses → KSh 5 / 10 / 20 / 40, every gap 155 ms, same count every time.
+  (The old 2 / 10 / 20 / 40 table was every pulse counted twice; fixed with
+  a 75 ms debounce and a 400 ms coin gap. See the test log.)
+- Accumulation 4 × KSh 5 and 2 × KSh 10; KSh 20; KSh 40 vends two pads
+- Two coins inserted as fast as the acceptor allows read as two
+- **Motor noise: 0 pulses discarded** (was 5–46/s)
+- **Loop max 51 ms idle, 227 ms around a vend** (was up to 2.2 s: the LCD
+  library's init() waited a second on every rebuild)
+- Change carries across a vend; meter survives a power cut; recovered pad
+  held and released by button or coin; jam retry and its three-attempt cap
+- **Inhibit relay:** active HIGH on NC, clicks correctly (`n`), no click
+  during boot, fail-safe (shorting the port inhibits)
+- **Guard:** no stock-line flapping through 24 relay clicks and many vends
+- **Boot window:** pull-downs hold GPIO 19 and 26; no relay moves at reset
+- **Power:** 5.01 V buck, Schottky into VIN, 3V3 holds 3.33 V with the
+  motor running, bulk caps at the 12 V block and buck output, 47 nF + 1N5408
+  at the motor
+- **PC817 coin line (meter):** 3.29 V idle, 33 mV held low, no change when
+  the acceptor is unplugged and replugged
+- **LCD** through the level converter (LV 3.29 V, HV 5.02 V), found at 0x27;
+  backlight sleeps after 2 min; **the retry button or a coin wakes it**
+- **Service number** set; the self-test no longer warns
 
 ### Pending ⏳
 
 | | Blocked on |
 |---|---|
 | **TVS on the 12 V block** | Not bought. P6KE15A, band to +12 V |
-| **100 µF + 100 nF at the relay module VCC** | Not fitted. Part of the physical fix for the relay disturbing the stock switch |
-| **Motor noise → zero** | Re-measure with `s` now the 47 nF and 1N5408 are fitted |
-| **Real drop times** | No chute or panel. Every timing so far is a finger at the IR sensor |
+| **100 µF + 100 nF at the relay module VCC** | Not fitted. Part of the physical fix for relay/stock-switch coupling |
+| **100 µF + 100 nF at the LCD** | Not fitted |
+| **Real drop times** | No chute. Every timing so far is a finger at the IR sensor |
 | **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
+| **Which pass takes the 227 ms** | Not measured. Probably the coin-finish/vend-start pass, before the coil can drop a pad. The soak will show a missed drop if not |
+| **`k`, `l`, `L` console commands** | Listed in the help, never implemented. Write them or remove them from the help |
+
+**Service number now holds on the top line ✅ verified on hardware.**
+It used to sit inside the paged sentence on line 2: two seconds a page, and
+because pages break on spaces a spaced number could be split across two pages
+depending on the credit shown before it. Every screen that gives the number
+now puts it on line 1 via `callLine()` (`CALL <number>` if it fits 16, else
+`TEL <number>`, else the number alone) and pages the message on line 2, so the
+number is on screen for as long as the fault lasts. To verify: `t`, leave
+the beam clear so the test vend times out, and the fault screen should show
+the number on the top line while line 2 pages; `x` clears it. Done on the
+bench 2026-10-01: the number held on the top line throughout the fault.
 
 ### Next session should
 
-1. ~~Inhibit relay click test and EN resets~~ ✅ 2026-10-01
-2. ~~Coin tests through the PC817~~ ✅ 2026-10-01, after finding and fixing
-   the double count. 3V3 holds at 3.33 V with the motor running ✅. Two
-   fast coins read as two ✅.
-3. ~~`s` for motor noise~~ ✅ 0 pulses discarded. **New: find what made one
-   loop pass take 1.3 s** (see the test log), and whether the stock line
-   changed on its own.
-4. **Watch the stock line while the inhibit relay switches.** If the guard
-   holds and the log shows no flapping, **commit the guard**.
-5. Buy and fit the TVS; fit the relay module decoupling.
-6. ~~Set the real service number~~ ✅ 2026-10-01: the client's number, kept in `service_contact.h`, which is **local only and in .gitignore** (copy `service_contact.example.h` to create it). Self-test no longer warns.
-7. Build the chute, load the coil, run `T25`, bake the timeout in.
-8. The 50-cycle soak — that number is what the client actually asked for.
+1. **Build the chute and load the coil with real pads.**
+2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
+3. **The 50-cycle soak** — the number the client asked for.
+4. Buy and fit the TVS; fit the relay-module and LCD decoupling.
+5. Decide `k`/`l`/`L`.
+
+**Flashing on another computer:** create `service_contact.h` from
+`service_contact.example.h` first, or the fault screen shows the placeholder.
+The number is deliberately not in git.
 
 ---
 

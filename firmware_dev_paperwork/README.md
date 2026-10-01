@@ -50,15 +50,17 @@ none of them make sense without it.
 | | |
 |---|---|
 | Firmware | Complete, compiles clean on ESP32 core 2.0.11 |
-| Size | ~333 KB flash (25%), 22 KB RAM |
-| Coin handling | ✅ verified on hardware — all four coins, accumulation, change. ⏳ To re-verify through the new PC817 coin line |
+| Size | ~336 KB flash (25%), 24 KB RAM |
+| Coin handling | ✅ all four coins exact through the PC817 (1 / 5 / 10 / 20 pulses), accumulation, change, KSh 40 double vend |
 | Coin-line protection | ✅ PC817 built and metered: no spike reaches the GPIO side. Three boards were lost before it |
 | Power-cut recovery | ✅ verified on hardware |
 | Jam retry / customer button | ✅ verified on hardware |
 | Drop times | ⏳ **not measured** — no chute yet, every timing so far is a finger at the sensor |
 | Pads feeding off the coil | ⏳ **untested** — the number one risk in the whole project |
 | LCD | ✅ working through an I²C level converter, found at 0x27 (`WIRING.md` §9) |
-| Coin inhibit relay | ✅ active-HIGH module on the NC contact; holds through boot, self-test correct. `n1`/`n0` next |
+| Coin inhibit relay | ✅ active-HIGH module on the NC contact; clicks correctly, holds through boot |
+| Motor noise | ✅ 0 pulses discarded |
+| Loop timing | ✅ 51 ms idle, 227 ms around a vend (was 2.2 s) |
 | New board (2026-10-01) | ✅ flashed, `SELF-TEST: PASS`, no relay click during boot |
 
 `FIRMWARE_PROGRESS.md` is the living detail behind this table.

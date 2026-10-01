@@ -33,7 +33,7 @@ against the configured timeout.
 | | Does |
 |---|---|
 | `i` | Watch the IR drop beam. Wave a pad through |
-| `k` | Watch the pad stock switch. Work the lever |
+| `k` | ⚠ **Not implemented** (listed in the help only). Meant to watch the pad stock switch |
 
 Any other command stops a running watch, so its chatter never buries the answer
 you just asked for.
@@ -68,7 +68,7 @@ timeout from the picture entirely without a reflash.
 | `n` | Click the inhibit relay 3× — does it actually move? |
 | `n0` / `n1` | Hold the inhibit pin LOW / HIGH to read the relay's polarity |
 | `P<s>` | **Coin probe**: waits up to `<s>` seconds (default 30) for one coin, samples GPIO 18 every ~20 µs and prints every LOW and HIGH period beside what the interrupt counted. The two numbers must match. Reads the pin only; the coin is counted and banked as normal. Found the double-counting fault on 2026-10-01 |
-| `l` | Rebuild the LCD and draw a test pattern |
+| `l` | ⚠ **Not implemented** (listed in the help only). Meant to rebuild the LCD and draw a test pattern |
 | `b` | Buzzer test |
 
 `m` and `T` **block**, so the `loop()` motor backstop is not running during
@@ -86,7 +86,7 @@ nothing automatic uses either.
 | `x` | Clear a latched fault — staff override, forgives the retry count |
 | `r` | Zero the session counters |
 | `h` | Toggle the heartbeat line (soak tests) |
-| `L` | Toggle event logging |
+| `L` | ⚠ **Not implemented** (listed in the help only). Meant to toggle event logging |
 
 ---
 

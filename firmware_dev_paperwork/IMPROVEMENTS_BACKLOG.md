@@ -8,36 +8,21 @@ Ordered by what unblocks the most.
 
 ## Blocking the demo
 
-### 1. Wire the LCD
+### 1. ~~Wire the LCD~~ ✅ 2026-10-01
 
-**Status:** not wired. The I2C scan finds nothing on the bus.
-
-Everything the customer sees is currently invisible — the paged messages, the
-countdown, the retry prompt, the accepted-coin list. The machine vends
-correctly and tells nobody anything.
-
-**Not a code task.** See `TROUBLESHOOTING.md` → "Nothing on the I2C bus".
+Wired through an I²C level converter (`WIRING.md` §9), found at 0x27. Still
+to fit: 100 µF + 100 nF at the LCD.
 
 ### 2. Settle the inhibit relay polarity
 
-**Status:** decided by hardware. The active-LOW module was replaced
-(2026-09-30) with an active-HIGH one identical to the motor relay, because
-3.3 V cannot release a 5 V active-LOW module. `INHIBIT_RELAY_ACTIVE_HIGH =
-true`, GPIO 19 pull-**down**. ⏳ Still to confirm on a live board.
-
-Confirm with `n1` then `n0`: the relay should energise on `n1` and release on
-`n0`. Then reset with the acceptor connected and listen: no click through boot.
+**Status: ✅ done 2026-10-01.** Active-HIGH module on the NC contact,
+`INHIBIT_RELAY_ACTIVE_HIGH = true`, GPIO 19 pull-down. `n` clicks it
+correctly and there is no click through boot.
 
 ### 3. Suppress the motor, drive `motor noise` to zero
 
-**Status:** down from 70/s to 5–46/s. Not finished.
-
-100 nF ceramic across the motor terminals first — measured as brush arcing, not
-the switching spike. Then the flyback diode for the turn-off spike, and 100 nF
-from each terminal to the case if it is metal.
-
-The firmware mutes the coin line so this cannot become money, but that is a
-plaster over a hardware fault.
+**Status: ✅ 0 pulses discarded (2026-10-01).** 47 nF + 1N5408 at the motor,
+and the coin line through the PC817. The firmware mute stays as a backstop.
 
 ### 4. Build the chute and measure the real drop times
 
@@ -55,11 +40,11 @@ cleanly. No firmware change moves it — that number is the coil and the pads.
 
 ## Worth doing before a site install
 
-### 6. Put the real service number in `SERVICE_CONTACT`
+### 6. ~~Put the real service number in `SERVICE_CONTACT`~~ ✅ 2026-10-01
 
-Currently `"CALL No. ON BOX"`. The self-test nags when there is no digit in it,
-because `GET HELP` without saying who to get is no help at all. 16 characters
-maximum.
+Set in `service_contact.h`, which is local only and in `.gitignore`; copy
+`service_contact.example.h` to create it on another computer. The number is
+deliberately not in git.
 
 ### 7. Decide the part-payment policy with the client
 
@@ -133,6 +118,15 @@ Out of scope for this build. Option D in the feasibility study.
 ---
 
 ## Small things
+
+- **`k`, `l` and `L`** are listed in the console help (and in
+  `CONSOLE_COMMANDS.md`) but were never implemented; typing them says
+  "Unknown command". Write them or take them out of the help.
+- **Per-state loop max.** `loop max` is one number for everything. Splitting
+  it by state would show whether the 227 ms pass is before or during the
+  coil's turn. Worth it only if the soak shows a missed drop.
+- **Fit the TVS (P6KE15A) and the relay-module and LCD decoupling.** Parts,
+  not code; see `WIRING.md` §2.
 
 - **`CLEAR_BTN_HOLD_MS`** is 1 second. Watch a real customer use it before
   deciding whether that is right — too short invites accidents, too long and

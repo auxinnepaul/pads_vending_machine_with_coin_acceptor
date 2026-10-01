@@ -268,6 +268,12 @@ the flash rail to 1.8 V, and the board stops booting.
 
 Install **LiquidCrystal I2C** (Frank de Brabander) via Library Manager.
 
+**Create `service_contact.h`** before flashing: copy
+`service_contact.example.h` to `service_contact.h` in the sketch folder and
+put the real service number in it. It is in `.gitignore`, so the number never
+reaches git. Without it the fault screen shows the `07XX XXX XXX`
+placeholder and the self-test warns.
+
 ### That architecture warning is not an error
 
 ```

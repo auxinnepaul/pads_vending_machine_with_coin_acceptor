@@ -1906,6 +1906,30 @@ uint8_t lcdPage(const char *text, uint8_t page, char *out, size_t n)
 
 // Hold l1 still on the top line and cycle l2's pages underneath it, one per
 // call. The static top line gives the reader an anchor while the rest moves.
+// The top line of every screen that gives the service number.
+//
+//  The number sits on line 1, which holds still, while the message pages
+//  along line 2. So it stays readable for as long as the screen is up, long
+//  enough to write down, and it is never split across pages. It used to be
+//  inside the paged sentence: two seconds a page, and because pages break on
+//  spaces, "07XX XXX XXX" could land as "PLEASE CALL 07XX" then "XXX XXX"
+//  depending on the credit shown before it.
+//
+//  "CALL " + number if it fits in 16, else "TEL " + number, else the number
+//  alone (the self-test already refuses one over 16).
+const char *callLine()
+{
+  static char buf[17];
+  size_t n = strlen(SERVICE_CONTACT);
+  if (n + 5 <= 16)
+    snprintf(buf, sizeof(buf), "CALL %s", SERVICE_CONTACT);
+  else if (n + 4 <= 16)
+    snprintf(buf, sizeof(buf), "TEL %s", SERVICE_CONTACT);
+  else
+    snprintf(buf, sizeof(buf), "%s", SERVICE_CONTACT);
+  return buf;
+}
+
 void sayPaged(const char *l1, const char *l2, uint8_t &page)
 {
   char buf[17];
@@ -2296,7 +2320,7 @@ void attemptClear(const char *who, bool fromButton)
   // another attempt. The console keeps working, because that is staff.
   if (fromButton && buttonRetries >= MAX_BUTTON_RETRIES)
   {
-    say("SORRY - JAMMED", SERVICE_CONTACT);
+    say(callLine(), "SORRY - JAMMED");
     beep(TONE_REJECT_HZ, TONE_REJECT_MS);
     faultRotateMs = millis() + MESSAGE_HOLD_MS;
 
@@ -2359,9 +2383,9 @@ void attemptClear(const char *who, bool fromButton)
       beep(TONE_REJECT_HZ, TONE_REJECT_MS);
       {
         char msg[96];
-        snprintf(msg, sizeof(msg), "STILL FAULTY - %s - %s",
-                 haltReason[0] ? haltReason : "SEE SERIAL", SERVICE_CONTACT);
-        sayAllPages("OUT OF ORDER", msg, 1500);
+        snprintf(msg, sizeof(msg), "OUT OF ORDER - STILL FAULTY - %s",
+                 haltReason[0] ? haltReason : "SEE SERIAL");
+        sayAllPages(callLine(), msg, 1500);
       }
       LOG(F("Refusing to clear ("));
       LOG(who);
@@ -4056,9 +4080,9 @@ void setup()
   {
     {
       char msg[96];
-      snprintf(msg, sizeof(msg), "%s - THIS MACHINE NEEDS ATTENTION - %s",
-               haltReason[0] ? haltReason : "SELF-TEST FAILED", SERVICE_CONTACT);
-      sayAllPages("OUT OF ORDER", msg, 1600);
+      snprintf(msg, sizeof(msg), "OUT OF ORDER - %s - THIS MACHINE NEEDS ATTENTION",
+               haltReason[0] ? haltReason : "SELF-TEST FAILED");
+      sayAllPages(callLine(), msg, 1600);
     }
     armClearButtonForNewFault();
     LOGLN();
@@ -4682,29 +4706,24 @@ void loop()
         //  to call is named — "you have paid" is what makes a call worth
         //  making. The staff hint goes last, where it does not delay her.
         //
-        //  Nothing here promises her money back. The machine cannot give it
-        //  back and must not imply otherwise; a person on the phone can.
-        //  KEEP IT SHORT. Every page is two seconds, and nobody stands in a
-        //  washroom for twenty of them. The first two pages have to carry the
-        //  whole point on their own — that she has paid, and the number — so
-        //  the message still works for someone who reads it and walks off.
-        //  The staff hint trails behind, where it delays nobody who is only
-        //  passing through.
+        //  The number holds on the top line (callLine()) for as long as the
+        //  fault lasts, so it can be written down; only line 2 pages. The
+        //  first page still carries the point on its own, that she has paid,
+        //  and the staff hint trails behind where it delays nobody.
         //
         //  Nothing here promises her money back. The machine cannot give it
         //  back and must not imply otherwise; a person on the phone can.
         char msg[120];
         if (credit > 0)
           snprintf(msg, sizeof(msg),
-                   "YOU PAID KSH %u - PLEASE CALL %s"
+                   "YOU PAID KSH %u - OUT OF ORDER - CALL THE NUMBER ABOVE"
                    " - STAFF CHECK COIL AND SENSOR",
-                   credit, SERVICE_CONTACT);
+                   credit);
         else
           snprintf(msg, sizeof(msg),
-                   "NO PADS CAN COME OUT - PLEASE CALL %s"
-                   " - STAFF CHECK COIL AND SENSOR",
-                   SERVICE_CONTACT);
-        sayPaged("OUT OF ORDER", msg, faultMsgIdx);
+                   "OUT OF ORDER - NO PADS CAN COME OUT - CALL THE NUMBER"
+                   " ABOVE - STAFF CHECK COIL AND SENSOR");
+        sayPaged(callLine(), msg, faultMsgIdx);
       }
       else if (credit >= PAD_PRICE)
       {
@@ -4716,9 +4735,9 @@ void loop()
       {
         // Nobody is owed anything, so it is simply broken.
         char msg[80];
-        snprintf(msg, sizeof(msg), "%s - NO COINS ARE BEING TAKEN - %s",
-                 faultLine2[0] ? faultLine2 : "SEE SERIAL", SERVICE_CONTACT);
-        sayPaged("OUT OF ORDER", msg, faultMsgIdx);
+        snprintf(msg, sizeof(msg), "OUT OF ORDER - %s - NO COINS ARE BEING TAKEN",
+                 faultLine2[0] ? faultLine2 : "SEE SERIAL");
+        sayPaged(callLine(), msg, faultMsgIdx);
       }
     }
     break;
