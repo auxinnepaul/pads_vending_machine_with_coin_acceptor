@@ -409,6 +409,30 @@ set to the real counts. After that every coin read exactly, every time.
 - **When a change "breaks" something, check whether it broke it or exposed
   it.** The optocoupler didn't cause the fault; it made a hidden one visible.
 
+### 2.11 A later decision quietly broke an earlier one
+
+**What happened.** On 25 September the design said: keep the coin slot open
+during a vend, because a coin landing mid-vend is banked and buys the next
+pad. On 26 September a separate fix muted the coin line while the motor runs,
+because the motor was inventing coins. Each decision was right on its own.
+Together they meant a coin inserted while the motor turned had its pulses
+thrown away: coin in the box, nothing credited. Nobody connected the two until
+the builder noticed, a week later, that coins could still go in mid-vend.
+
+**The fix.** Shut the slot from the moment the price is met until the pad is
+collected, and before starting the motor, wait for any coin already inside
+the acceptor to finish counting.
+
+**Lessons.**
+- **When you add a rule, re-read the rules it touches.** The mute changed what
+  "a coin arriving during a vend" means; decision 2 should have been reopened
+  that day.
+- **Write decisions down with their reasons.** Decision 2's reason ("a coin
+  landing mid-vend is banked") was checkable, and it was the reason that had
+  become false.
+- **Watch people use the machine.** A builder dropping coins at the wrong
+  moment found what a week of reviews of the code had missed.
+
 ---
 
 ## Part 3 — Diagnostics and tooling

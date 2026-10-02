@@ -44,17 +44,35 @@ means writing flash *before* confirming delivery, which reopens the far worse
 failure above. Given a choice of which way to be wrong in a window that small,
 **err toward the customer**.
 
-### 2. A coin landing mid-vend is banked, not discarded
+### 2. The slot shuts from "price met" until the pad is collected, and a coin already inside is still counted
 
-**Decision.** Coins arriving in `DISPENSING` or `DELIVERED` go on the meter and
-buy the next pad. Coins arriving in `EMPTY` or `FAULT` are refused.
+**Decision (revised 2026-10-02).** The acceptor is live only in `IDLE` while
+the credit is short of a pad. The instant the price is met it shuts, and it
+stays shut through `PAID`, `DISPENSING` and `DELIVERED`. Before the motor
+starts, `PAID` holds for `PAID_HOLD_MS` **and** waits for the coin line to go
+quiet (up to `PAID_MAX_WAIT_MS`). Any coin that lands in those states (one
+already inside the acceptor when the slot shut) goes on the meter and buys the
+next pad. Coins arriving in `EMPTY` or `FAULT` are refused.
 
-**Why.** Inhibiting the acceptor stops the *next* coin; one already rolling
-through the mechanism still completes and lands mid-state. The machine
-physically has that money. Those two states end in `IDLE` within a second or
-two, so it **can** deliver — throwing the coin away would mean keeping the money
-and giving nothing back. `EMPTY` and `FAULT` genuinely cannot deliver, so there
-the money must not go on the meter.
+**Why.** The original decision kept the slot open during a vend and banked
+mid-vend coins. That stopped being safe a day later, when decision 18 muted the
+coin line while the motor turns: a coin inserted then has its pulses binned, so
+the money is in the box and nothing is credited. The two decisions were never
+reconciled until the builder noticed coins could go in mid-vend (2026-10-02).
+
+Shutting the slot stops new coins. It cannot stop one already rolling through
+the mechanism, which still pulses after the slot shuts; waiting for the coin
+line to go quiet before the motor starts is what makes sure that coin is
+counted instead of muted. A KSh 40 is about three seconds of pulses, hence the
+8 s ceiling.
+
+**Cost:** two relay operations per sale. A relay is rated for 100,000+.
+
+**Rejected: shutting the slot for a couple of seconds after every coin.**
+Counting is not the problem: two coins as fast as the acceptor will take them
+read as two. A coin dropped in while the slot is shut is rejected back out,
+which reads as a broken machine, and it would work the relay twice per coin.
+The screen acknowledges each coin without needing the slot shut.
 
 ### 3. A full pad's worth of credit is never timed out
 
@@ -357,6 +375,30 @@ Only plain idle sleeps. `OUT OF ORDER` and `SORRY - NO PADS` stay lit — that
 message is the whole reason the screen is there.
 
 ---
+
+### 22b. The sale says what it understood, step by step
+
+**Decision (2026-10-02).** Each step of a sale gets its own screen, held long
+enough to read, instead of jumping from a coin straight to a running motor:
+
+| Moment | Top line | Bottom line | Held |
+|---|---|---|---|
+| A coin, still short | `THAT IS KSH 5!` | `TOTAL KSH 5` | 1.5 s (`COIN_ACK_MS`) |
+| ...then | `ADD KSH 15 MORE` | `TIME LEFT 1:58`, counting down | until the next coin |
+| Price met | `KSH 20 - PAID!` | `A FULL PAD!` | 2 s (`PAID_HOLD_MS`), slot shut |
+| KSh 40 | `KSH 40 - PAID!` | `2 PADS COMING!` | 2 s |
+| Motor running | `HERE IT COMES...` | `PAD 1 OF 2` when there are two | until the pad drops |
+| Delivered | `PLEASE COLLECT` | `YOUR PAD :)` | 2.5 s (`MESSAGE_HOLD_MS`) |
+| Second of two | `ONE MORE COMING` | `PAD 2 OF 2` | 1 s (`NEXT_PAD_HOLD_MS`) |
+| Done | `THANK YOU!` | `HAVE A GOOD DAY`, or `CREDIT KSH 5` if change is left | 2 s (`THANKS_MS`), slot open again |
+
+**Why.** The builder's words: it should feel like the machine "knows what it
+is doing and understands itself", and "TAKE YOUR PAD" read as an order. The
+pause on `PAID!` is also the money rule in decision 2.
+
+**None of the holds blocks.** They are deadlines in `loop()`, so the beam and
+the coin line are watched throughout. A coin that arrives during a held screen
+simply updates it.
 
 ## CONSOLE
 

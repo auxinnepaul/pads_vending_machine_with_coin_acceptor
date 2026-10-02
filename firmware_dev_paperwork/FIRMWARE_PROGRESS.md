@@ -79,6 +79,7 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 
 ### Next session should
 
+0. **Bench-test the new sale flow** (2026-10-02 section: test plan). Then commit it.
 1. **Build the chute and load the coil with real pads.**
 2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
 3. **The 50-cycle soak** — the number the client asked for.
@@ -88,6 +89,59 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 **Flashing on another computer:** create `service_contact.h` from
 `service_contact.example.h` first, or the fault screen shows the placeholder.
 The number is deliberately not in git.
+
+---
+
+## 2026-10-02 — Shut the slot during a sale, and make the sale talk
+
+**Status: compiles clean, ⏳ not yet run on the board.**
+
+### The money hole
+
+The builder noticed a coin could be inserted while the machine was
+dispensing. Decision 2 (25 Sep) kept the slot open mid-vend and banked those
+coins; decision 18 (26 Sep) muted the coin line while the motor turns and
+bins any burst. Together: a coin inserted while the coil turns is in the box
+and never credited. Never reconciled until now (`LESSONS_LEARNED.md` 2.11).
+
+**Fix.** New state `ST_PAID` between IDLE and DISPENSING. The slot rule is
+now `state == ST_IDLE` and the credit short of a pad, so the acceptor shuts
+the instant the price is met and stays shut through PAID, DISPENSING and
+DELIVERED. PAID holds `PAID_HOLD_MS` (2 s) **and** waits for the coin line to
+go quiet (up to `PAID_MAX_WAIT_MS`, 8 s) before the motor starts, so a coin
+already inside the acceptor is counted, not muted. Cost: two relay operations
+per sale.
+
+**Not done, by recommendation:** shutting the slot for ~2 s after every coin.
+Fast coins already read correctly, a coin dropped in during the shut window
+would be rejected back out, and it would work the relay twice per coin.
+
+### The screens
+
+Each step now has its own screen, held by a deadline in loop() (nothing
+blocks): `THAT IS KSH 5!` / `TOTAL KSH 5` (1.5 s) → `ADD KSH 15 MORE` /
+`TIME LEFT 1:58` → `KSH 20 - PAID!` / `A FULL PAD!` (2 s) →
+`HERE IT COMES...` → `PLEASE COLLECT` / `YOUR PAD :)` (2.5 s) →
+`THANK YOU!` / `HAVE A GOOD DAY` (2 s, slot reopens). KSh 40: `2 PADS
+COMING!`, `PAD 1 OF 2`, then `ONE MORE COMING` / `PAD 2 OF 2` (1 s). Every
+line measured at 16 characters or fewer for any value a real sale produces.
+
+Docs updated: DESIGN_DECISIONS 2 (rewritten) and 22b (new), OVERVIEW (six
+states), README (behaviour diagram, screens table, part-payment examples, slot
+rule), LOG_REFERENCE, LESSONS_LEARNED 2.11.
+
+### Bench test plan
+
+1. **KSh 5, then 5, 5, 5:** `THAT IS KSH 5!` each time with the total, then
+   the `ADD ... MORE` countdown; at 20, `KSH 20 - PAID!` for ~2 s before the
+   motor; the relay clicks the slot shut as PAID appears.
+2. **Coin during the PAID pause or the motor run:** it must come back out
+   (slot shut), or, if it was already inside, be banked toward the next pad.
+3. **KSh 20:** `PAID!`, `HERE IT COMES...`, `PLEASE COLLECT YOUR PAD :)`,
+   `THANK YOU!`, and the slot reopens (relay click) under THANK YOU.
+4. **KSh 40:** `2 PADS COMING!`, `PAD 1 OF 2`, collect, `ONE MORE COMING`,
+   `PAD 2 OF 2`, collect, THANK YOU. Slot shut throughout.
+5. `s`: state names, and loop max still low.
 
 ---
 

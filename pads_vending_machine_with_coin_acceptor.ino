@@ -141,11 +141,13 @@
   payment that nobody comes back for. Both are logged, never silent.
 
   ---------------------------------------------------------------------------
-  THE FIVE STATES
+  THE SIX STATES
   ---------------------------------------------------------------------------
     IDLE        Waiting for money. Coins accepted.
-    DISPENSING  Motor turning, watching the beam. Coins refused.
-    DELIVERED   Pad fell, "TAKE YOUR PAD" on screen. Coins refused.
+    PAID        The price is met. "KSH 20 - PAID!" for a moment before the
+                motor starts. Slot already shut.
+    DISPENSING  Motor turning, watching the beam. Slot shut.
+    DELIVERED   Pad fell, "PLEASE COLLECT YOUR PAD" on screen. Slot shut.
     EMPTY       Stock switch says no pads. Coins refused. NOT a fault: it
                 comes back on its own the moment the coil is refilled.
     FAULT       Something is wrong that needs a person. Coins refused.
@@ -158,7 +160,7 @@
                           nothing dropped.  <- the one you asked about
     COIN_GAP_MS           how long a silence means "that coin is finished"
     CREDIT_TIMEOUT_MS     how long part-payment sits before it is forgotten
-    MESSAGE_HOLD_MS       how long "TAKE YOUR PAD" stays on the screen
+    MESSAGE_HOLD_MS       how long "PLEASE COLLECT YOUR PAD" stays up
 
   The first three can be changed live from the console, so you can find the
   right number without reflashing, then write it into SECTION 5. See the
@@ -497,7 +499,7 @@ const uint32_t FAULT_ROTATE_MS = 2000;   // LCD line 2 rotation
 //    CREDIT_TIMEOUT_MS        forget part-payment nobody came back for
 //    IR_DEBOUNCE_MS           noise filter on the drop beam
 //    IR_SETTLE_MS             prove the chute is clear before starting
-//    MESSAGE_HOLD_MS          how long "TAKE YOUR PAD" stays up
+//    MESSAGE_HOLD_MS          how long "PLEASE COLLECT YOUR PAD" stays up
 //    MOTOR_LIMIT_MARGIN_MS    the backstop that can never be reached normally
 //    PAD_SWITCH_DEBOUNCE_MS   noise filter on the stock switch
 //    IR_STUCK_WARN_MS         nag about something sitting in the chute
@@ -573,7 +575,7 @@ uint32_t COIN_GAP_MS = 400;
 //
 //  WHAT        The motor starts and the firmware watches the IR beam across
 //              the chute. If a pad breaks that beam the motor stops and the
-//              screen says TAKE YOUR PAD. If nothing breaks it within this
+//              screen says PLEASE COLLECT. If nothing breaks it within this
 //              time, the firmware concludes no pad came out. What happens then
 //              depends on the stock switch:
 //
@@ -670,7 +672,7 @@ uint32_t CREDIT_TIMEOUT_MS = 120000; // 2 minutes. 0 = never expire.
 //              believed. Stops dust, a flickering sensor or the edge of the
 //              coil from registering as a delivered pad.
 //  TOO SHORT   Noise counts as a pad. The motor stops early and the customer
-//              gets nothing while the screen cheerfully says TAKE YOUR PAD.
+//              gets nothing while the screen cheerfully says PLEASE COLLECT.
 //  TOO LONG    A fast-falling pad can clear the beam before the filter accepts
 //              it, so a real delivery is missed and you get a phantom jam.
 //  HOW TO SET  15 ms is right for a pad falling under gravity. If the console
@@ -697,7 +699,7 @@ const uint32_t IR_DEBOUNCE_MS = 15;
 const uint32_t IR_SETTLE_MS = 150;
 
 // ---------------------------------------------------------------------------
-//  MESSAGE_HOLD_MS — how long "TAKE YOUR PAD" stays on the screen
+//  MESSAGE_HOLD_MS — how long "PLEASE COLLECT YOUR PAD" stays on the screen
 // ---------------------------------------------------------------------------
 //  WHAT        After a successful vend, how long the machine holds that
 //              message before going back to INSERT COIN.
@@ -707,6 +709,38 @@ const uint32_t IR_SETTLE_MS = 150;
 //  HOW TO SET  Purely how it feels. 2.5 s reads comfortably at arm's length.
 //  CONSOLE     none — needs a reflash
 const uint32_t MESSAGE_HOLD_MS = 2500;
+
+// ---------------------------------------------------------------------------
+//  THE SALE, SCREEN BY SCREEN — how long each step is held
+// ---------------------------------------------------------------------------
+//  The machine says what it understood at every step instead of jumping
+//  straight from a coin to a running motor:
+//
+//    a coin, short     THAT IS KSH 5!   / TOTAL KSH 5       COIN_ACK_MS
+//    then              ADD KSH 15 MORE  / TIME LEFT 1:58    until next coin
+//    price met         KSH 20 - PAID!   / A FULL PAD!       PAID_HOLD_MS
+//    (KSh 40)          KSH 40 - PAID!   / 2 PADS COMING!
+//    motor             HERE IT COMES... / (PAD 1 OF 2)      until it drops
+//    delivered         PLEASE COLLECT   / YOUR PAD :)       MESSAGE_HOLD_MS
+//    next of two       ONE MORE COMING  / PAD 2 OF 2        NEXT_PAD_HOLD_MS
+//    done              THANK YOU!       / HAVE A GOOD DAY   THANKS_MS
+//
+//  None of these blocks. They are deadlines checked by loop(), so the beam and
+//  the coin line are watched throughout.
+//
+//  PAID_HOLD_MS IS ALSO A MONEY RULE, not only a pause to read. The slot shuts
+//  the instant the price is met, but a coin already rolling through the
+//  acceptor cannot be stopped. Its pulses must finish arriving BEFORE the
+//  motor starts, because the coin line is muted while the coil turns and a
+//  burst caught by the mute is thrown away: coin in the box, nothing credited.
+//  So the motor waits for the hold AND for the coin line to be quiet, up to
+//  PAID_MAX_WAIT_MS (a KSh 40 is about three seconds of pulses).
+//  CONSOLE     none — needs a reflash
+const uint32_t COIN_ACK_MS = 1500;
+const uint32_t PAID_HOLD_MS = 2000;
+const uint32_t NEXT_PAD_HOLD_MS = 1000;
+const uint32_t PAID_MAX_WAIT_MS = 8000;
+const uint32_t THANKS_MS = 2000;
 
 // ---------------------------------------------------------------------------
 //  MOTOR_LIMIT_MARGIN_MS — the backstop, on top of DISPENSE_TIMEOUT_MS
@@ -967,20 +1001,26 @@ const uint32_t BACKLIGHT_TIMEOUT_MS = 120000; // 2 minutes
 //  STATE
 // ===========================================================================
 //
-//  The machine is always in exactly one of five states, and the state decides
+//  The machine is always in exactly one of six states, and the state decides
 //  two things: what is on the screen, and whether the coin acceptor is live.
 //
 //    ST_IDLE        Waiting for money. Coins accepted. Leaves here when
-//                   credit reaches the price, or when the stock switch says
-//                   the coil is empty.
+//                   credit reaches the price (-> PAID), or when the stock
+//                   switch says the coil is empty.
 //
-//    ST_DISPENSING  Motor turning, watching the beam. COINS STILL ACCEPTED —
-//                   one that lands here is banked and buys the next pad. Ends
-//                   when a pad breaks the beam (-> DELIVERED) or when
+//    ST_PAID        The price is met. The slot shuts at once, "KSH 20 -
+//                   PAID!" holds for PAID_HOLD_MS, and the motor waits until
+//                   the coin line is quiet so a coin already inside the
+//                   acceptor is counted before the mute starts. -> DISPENSING.
+//
+//    ST_DISPENSING  Motor turning, watching the beam. Slot shut. Ends when a
+//                   pad breaks the beam (-> DELIVERED) or when
 //                   DISPENSE_TIMEOUT_MS runs out (-> EMPTY or FAULT).
 //
-//    ST_DELIVERED   Pad fell. "TAKE YOUR PAD" holds for MESSAGE_HOLD_MS, then
-//                   back to IDLE. Coins still accepted, for the same reason.
+//    ST_DELIVERED   Pad fell. "PLEASE COLLECT YOUR PAD" holds for
+//                   MESSAGE_HOLD_MS, then back to IDLE: straight on to PAID if
+//                   the credit buys another pad, else THANK YOU and the slot
+//                   reopens.
 //
 //    ST_EMPTY       Stock switch says no pads. COINS INHIBITED. NOT a fault
 //                   and NOT latched: it returns to IDLE on its own the moment
@@ -993,18 +1033,22 @@ const uint32_t BACKLIGHT_TIMEOUT_MS = 120000; // 2 minutes
 //                   CLEAR_BTN_HOLD_MS or  x  is typed, and even then it
 //                   refuses while the beam still reads blocked.
 //
-//  THE RULE THE WHOLE DESIGN RESTS ON: the coin slot is live in every state
-//  EXCEPT EMPTY and FAULT — the two where the machine cannot honour a coin. It
-//  is derived from the state in one line of loop() and written nowhere else,
-//  so the slot can never disagree with what the machine is doing.
+//  THE RULE THE WHOLE DESIGN RESTS ON: the coin slot is live only in IDLE, and
+//  only while the credit is short of a pad. It is derived in one line of
+//  loop() and written nowhere else, so the slot can never disagree with what
+//  the machine is doing.
 //
-//  It stays open during a vend on purpose. A coin landing mid-vend is banked
-//  and buys the next pad, so there is nothing to protect against, and closing
-//  the slot for every sale would work the relay twice per vend for no benefit.
+//  It used to stay open during a vend, on the reasoning that a coin landing
+//  mid-vend is banked. That stopped being true when the coin line was muted
+//  around motor runs: a coin inserted while the coil turns has its pulses
+//  binned, so the money was taken and never credited. Shutting the slot from
+//  the moment the price is met until the pad is collected costs two relay
+//  operations per sale (a relay is rated for 100,000+).
 //
 enum State
 {
   ST_IDLE,
+  ST_PAID,
   ST_DISPENSING,
   ST_DELIVERED,
   ST_EMPTY,
@@ -1018,6 +1062,8 @@ const char *stateName(State s)
   {
   case ST_IDLE:
     return "IDLE";
+  case ST_PAID:
+    return "PAID";
   case ST_DISPENSING:
     return "DISPENSING";
   case ST_DELIVERED:
@@ -1112,6 +1158,14 @@ uint8_t idleMsgIdx = 0;    // which page of the idle prompt is showing
 uint32_t idleRotateMs = 0; // next idle repaint
 uint32_t dispenseStartMs = 0;
 uint32_t messageUntilMs = 0;
+
+// The sale's screens (see THE SALE, SCREEN BY SCREEN in SECTION 5).
+bool bannerUp = false;       // IDLE leaves the screen alone while this is up
+uint32_t bannerUntilMs = 0;  // ...until this deadline
+uint32_t paidSinceMs = 0;    // when PAID began, or its hold was restarted
+uint32_t paidHoldMs = 0;     // PAID_HOLD_MS, or NEXT_PAD_HOLD_MS mid-sale
+uint16_t orderPads = 0;      // pads this sale is buying; 0 = no sale running
+uint16_t orderIndex = 0;     // which of them is next, or being dispensed
 
 // Debounced IR state
 bool irRaw = false;
@@ -1321,6 +1375,17 @@ void IRAM_ATTR onCoinPulse()
 
 // A coin is "finished" once the acceptor has been quiet for COIN_GAP_MS.
 // Returns true and hands back the pulse count exactly once per coin.
+// True while a coin's pulses are still arriving. PAID waits on this, so a
+// coin already inside the acceptor when the slot shut is counted before the
+// motor starts and the mute would bin it.
+bool coinBurstInProgress()
+{
+  portENTER_CRITICAL(&coinMux);
+  bool busy = isrBurst > 0;
+  portEXIT_CRITICAL(&coinMux);
+  return busy;
+}
+
 bool takeCoin(CoinBurst &b)
 {
   bool ready = false;
@@ -1981,21 +2046,149 @@ void buildAcceptedCoins()
 //
 //  With a timeout:     ADD 10 IN 1:35
 //  Waiting forever:    ADD KSH 10 MORE
+// Line 2 of the part-payment screen. Line 1 already says "ADD KSH 15 MORE",
+// so this is the clock, or the total so far when part payment never expires.
 void creditPromptLine(char *buf, size_t n, uint32_t now)
 {
-  uint16_t owed = (PAD_PRICE > credit) ? (PAD_PRICE - credit) : 0;
-
   if (CREDIT_TIMEOUT_MS == 0)
   {
-    snprintf(buf, n, "ADD KSH %u MORE", owed);
+    snprintf(buf, n, "TOTAL KSH %u", credit);
     return;
   }
 
   uint32_t elapsed = now - lastCoinMs;
   uint32_t leftMs = (elapsed >= CREDIT_TIMEOUT_MS) ? 0 : (CREDIT_TIMEOUT_MS - elapsed);
   uint32_t secs = (leftMs + 999) / 1000; // round up, so it never shows 0:00 early
-  snprintf(buf, n, "ADD %u IN %lu:%02lu",
-           owed, (unsigned long)(secs / 60), (unsigned long)(secs % 60));
+  snprintf(buf, n, "TIME LEFT %lu:%02lu",
+           (unsigned long)(secs / 60), (unsigned long)(secs % 60));
+}
+
+// ---------------------------------------------------------------------------
+//  THE SALE'S SCREENS. See THE SALE, SCREEN BY SCREEN in SECTION 5 for the
+//  sequence and timings. Every line here is 16 characters or fewer for every
+//  value a real sale produces: the slot shuts once the price is met, so the
+//  credit is at most the price plus two coins (KSH 1079 at the console's
+//  highest price of 1000). snprintf cuts anything longer; it cannot overflow.
+// ---------------------------------------------------------------------------
+
+// A screen that IDLE leaves alone until it expires, then replaces with
+// showIdle(). Used for the coin acknowledgement and the thank-you.
+void showBanner(const char *l1, const char *l2, uint32_t ms)
+{
+  say(l1, l2);
+  bannerUp = true;
+  bannerUntilMs = millis() + ms;
+}
+
+// A coin that leaves her short of a pad: say what it was and the total.
+void showCoinAck(const CoinDef *coin)
+{
+  char l1[17], l2[17];
+  snprintf(l1, sizeof(l1), "THAT IS KSH %u!", coin->value);
+  snprintf(l2, sizeof(l2), "TOTAL KSH %u", credit);
+  showBanner(l1, l2, COIN_ACK_MS);
+}
+
+void showPaid()
+{
+  char l1[17], l2[17];
+  if (orderIndex > 1)
+  {
+    snprintf(l1, sizeof(l1), "ONE MORE COMING");
+    snprintf(l2, sizeof(l2), "PAD %u OF %u", orderIndex, orderPads);
+  }
+  else
+  {
+    snprintf(l1, sizeof(l1), "KSH %u - PAID!", credit);
+    uint16_t pads = credit / PAD_PRICE;
+    if (pads <= 1)
+      snprintf(l2, sizeof(l2), "A FULL PAD!");
+    else
+      snprintf(l2, sizeof(l2), "%u PADS COMING!", pads);
+  }
+  say(l1, l2);
+}
+
+// After the last pad of a sale. The slot reopens underneath this.
+void showThanks()
+{
+  char l2[17];
+  if (credit > 0)
+    snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+  else
+    snprintf(l2, sizeof(l2), "HAVE A GOOD DAY");
+  showBanner("THANK YOU!", l2, THANKS_MS);
+}
+
+// The price is met (from IDLE). The slot rule in loop() shuts the acceptor on
+// this same pass; PAID then holds before the motor starts.
+void enterPaid()
+{
+  if (orderPads == 0)
+  {
+    // A new sale. How many pads it buys is fixed now, and only a late coin
+    // can add to it.
+    orderPads = credit / PAD_PRICE;
+    if (orderPads == 0)
+      orderPads = 1;
+    orderIndex = 1;
+    paidHoldMs = PAID_HOLD_MS;
+    beep(TONE_VEND_HZ, TONE_VEND_MS);
+  }
+  else
+  {
+    // The next pad of a sale already running (a KSh 40 buys two).
+    orderIndex++;
+    if (orderIndex > orderPads)
+      orderPads = orderIndex;
+    paidHoldMs = NEXT_PAD_HOLD_MS;
+  }
+  bannerUp = false;
+  paidSinceMs = millis();
+  state = ST_PAID;
+  showPaid();
+  LOG(F("Price met — pad "));
+  LOG(orderIndex);
+  LOG(F(" of "));
+  LOG(orderPads);
+  LOGLN(F(". Slot shut; holding before the motor starts."));
+}
+
+// What the screen does after a coin is banked, in whichever state it landed.
+// Shared by real coins and the console's  v  so both behave the same.
+void coinScreenAfterBank(const CoinDef *coin)
+{
+  switch (state)
+  {
+  case ST_IDLE:
+    // Short of a pad: say what it was. Enough: IDLE moves to PAID on this pass.
+    if (credit < PAD_PRICE)
+      showCoinAck(coin);
+    break;
+  case ST_PAID:
+    // A coin already inside the acceptor when the slot shut. It can add pads
+    // to this sale; restart the hold so the new total is read.
+    orderPads = (orderIndex - 1) + credit / PAD_PRICE;
+    paidSinceMs = millis();
+    showPaid();
+    break;
+  case ST_DISPENSING:
+  {
+    // Rare now the slot is shut: the coin line is muted while the coil turns.
+    orderPads = (orderIndex - 1) + credit / PAD_PRICE;
+    char l2[17];
+    snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
+    say("PLEASE WAIT", l2);
+    break;
+  }
+  case ST_DELIVERED:
+    // The pad for orderIndex is already paid for; anything left is more pads.
+    // "PLEASE COLLECT YOUR PAD" stays up.
+    orderPads = orderIndex + credit / PAD_PRICE;
+    break;
+  default:
+    break;
+  }
 }
 
 // THE DROP SENSOR — the machine's only proof that a pad actually came out.
@@ -2166,6 +2359,9 @@ void rule()
 void enterFault(const char *line2)
 {
   motorOff();
+  orderPads = 0; // the sale is over; credit stays on the meter
+  orderIndex = 0;
+  bannerUp = false;
   armClearButtonForNewFault();
   faultCount++;
   strncpy(faultLine2, line2, sizeof(faultLine2) - 1);
@@ -2211,6 +2407,7 @@ void enterFault(const char *line2)
 void showIdle()
 {
   char l1[17], l2[17];
+  bannerUp = false; // whatever was on screen, IDLE owns it now
 
   if (holdForCollection)
   {
@@ -2221,7 +2418,7 @@ void showIdle()
 
   if (credit > 0 && credit < PAD_PRICE)
   {
-    snprintf(l1, sizeof(l1), "CREDIT KSH %u", credit);
+    snprintf(l1, sizeof(l1), "ADD KSH %u MORE", PAD_PRICE - credit);
     creditPromptLine(l2, sizeof(l2), millis());
     creditTickMs = millis() + 1000; // next countdown repaint is a second away
   }
@@ -2254,6 +2451,8 @@ void repaintForState()
   emptyRotateMs = 0;
   if (state == ST_IDLE)
     showIdle();
+  else if (state == ST_PAID)
+    showPaid();
 }
 
 // Wake the display, rebuilding it on the way up.
@@ -2286,6 +2485,9 @@ void sleepDisplay()
 void enterEmpty()
 {
   motorOff();
+  orderPads = 0; // the sale is over; credit stays and buys a pad after a refill
+  orderIndex = 0;
+  bannerUp = false;
   state = ST_EMPTY;
   emptyRotateMs = 0; // force an immediate repaint
   emptyMsgIdx = 0;
@@ -3525,7 +3727,10 @@ bool startVend(const char *why)
     enterFault("CHECK SENSOR");
     return false;
   }
-  say("DISPENSING...", "");
+  char l2[17] = "";
+  if (orderPads > 1)
+    snprintf(l2, sizeof(l2), "PAD %u OF %u", orderIndex, orderPads);
+  say("HERE IT COMES...", l2);
   LOG(F("Motor on — "));
   LOGLN(why);
   motorOn();
@@ -3542,11 +3747,13 @@ bool startVend(const char *why)
 //  sits in its own loop for a second or two stops all of that: the pad can
 //  fall unnoticed, and the coil keeps turning with nothing counting the time.
 //
-//  DELIVERED is included because the beam is still clearing and "TAKE YOUR
-//  PAD" is still the thing the customer needs to be reading.
+//  DELIVERED is included because the beam is still clearing and "PLEASE
+//  COLLECT YOUR PAD" is still the thing the customer needs to be reading.
+//  PAID is included because a coin may still be counting and the motor is
+//  about to start.
 static bool vendInFlight()
 {
-  return state == ST_DISPENSING || state == ST_DELIVERED;
+  return state == ST_PAID || state == ST_DISPENSING || state == ST_DELIVERED;
 }
 
 // ---------------------------------------------------------------------------
@@ -3910,12 +4117,16 @@ void handleCommand(char *s)
     // have happened. Banked while the machine can still deliver; refused in
     // EMPTY and FAULT, where it cannot.
     const CoinDef *coin = lookupCoin((uint16_t)n);
+    bool banked = false;
     if (!coin)
       coinsUnknown++;
-    else if (state == ST_IDLE || state == ST_DISPENSING || state == ST_DELIVERED)
-      bankCoin(coin);
+    else if (state == ST_IDLE || state == ST_PAID || state == ST_DISPENSING ||
+             state == ST_DELIVERED)
+      banked = bankCoin(coin);
     reportCoin((uint16_t)n, coin);
-    if (state == ST_IDLE)
+    if (banked)
+      coinScreenAfterBank(coin);
+    else if (state == ST_IDLE)
       showIdle();
     break;
   }
@@ -4346,9 +4557,10 @@ void loop()
     }
     else
     {
-      // IDLE, DISPENSING or DELIVERED: the machine can honour this, so bank
-      // it. Mid-vend is fine — those states end in IDLE within a second or
-      // two, and the credit simply buys the next pad.
+      // IDLE, PAID, DISPENSING or DELIVERED: the machine can honour this, so
+      // bank it. Outside IDLE the slot is shut, so this is a coin that was
+      // already inside the acceptor; those states end in IDLE within seconds
+      // and the credit buys the next pad.
       // A coin means somebody is standing at the machine, which is the only
       // thing a held pad was ever waiting for.
       if (holdForCollection)
@@ -4363,20 +4575,7 @@ void loop()
       else
         beep(TONE_REJECT_HZ, TONE_REJECT_MS);
       reportCoin(cb.pulses, coin, &cb);
-
-      if (state == ST_DISPENSING)
-      {
-        char l2[17];
-        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
-        say("PLEASE WAIT", l2);
-      }
-      else if (state == ST_IDLE && credit < PAD_PRICE)
-      {
-        showIdle(); // same screen as change left over from a vend
-      }
-      // DELIVERED is left alone on purpose: "TAKE YOUR PAD" must stay up.
-      // IDLE with credit >= PAD_PRICE is left alone too: a vend starts on the
-      // very next pass and paints DISPENSING over it.
+      coinScreenAfterBank(coin);
     }
   }
 
@@ -4447,21 +4646,22 @@ void loop()
 
   // ---- The coin slot. One rule, evaluated here and nowhere else. ----
   //
-  //  The acceptor is LIVE whenever the machine can still honour a coin, and
-  //  that is every state except the two where it cannot:
+  //  The acceptor is LIVE only while the machine is waiting for money: IDLE,
+  //  with the credit still short of a pad (or a recovered pad waiting for
+  //  someone, whose coin is what releases it). It shuts on the very pass the
+  //  price is met and stays shut through PAID, DISPENSING and DELIVERED, as
+  //  well as in EMPTY and FAULT.
   //
-  //      EMPTY  no pads to give
-  //      FAULT  something is broken
-  //
-  //  It deliberately stays live during a vend. A coin that lands mid-vend is
-  //  banked and buys the next pad, so there is nothing to protect against —
-  //  and inhibiting for every sale would work the relay twice per vend for no
-  //  benefit, which is thousands of needless operations over a machine's life.
+  //  Why shut during a sale: the coin line is muted while the motor turns,
+  //  and a coin whose pulses arrive then is binned, money taken and nothing
+  //  credited. A coin already inside the acceptor when the slot shuts is
+  //  still counted, because PAID waits for the coin line to go quiet before
+  //  the motor starts.
   //
   //  Driving it from state in one place means the slot can never disagree with
   //  what the machine is actually doing. There is no way to enter a state and
   //  forget to open or close it, because nothing else touches it.
-  coinAcceptorAllow(state != ST_EMPTY && state != ST_FAULT);
+  coinAcceptorAllow(state == ST_IDLE && !(credit >= PAD_PRICE && !holdForCollection));
 
   switch (state)
   {
@@ -4469,12 +4669,16 @@ void loop()
   // -----------------------------------------------------------------
   case ST_IDLE:
   {
+    // ---- A banner (coin acknowledgement, thank-you) holds the screen ----
+    if (bannerUp && reached(now, bannerUntilMs))
+      showIdle(); // clears bannerUp
+
     // ---- Part payment: keep asking, and show how long is left. ----
     if (credit > 0 && credit < PAD_PRICE)
     {
-      // Repaint line 2 once a second. Line 1 already says what she has, and
+      // Repaint line 2 once a second. Line 1 already says what to add, and
       // does not change until another coin lands, so it is left alone.
-      if (reached(now, creditTickMs))
+      if (!bannerUp && reached(now, creditTickMs))
       {
         creditTickMs = now + 1000;
         char l2[17];
@@ -4519,7 +4723,33 @@ void loop()
     //  A pad recovered from a power cut waits for a person. Everything else
     //  vends straight away: somebody is standing there, they just paid.
     if (credit >= PAD_PRICE && !holdForCollection)
+      enterPaid();
+    break;
+  }
+
+  // -----------------------------------------------------------------
+  case ST_PAID:
+  {
+    // The slot is already shut (the rule above). This pause is for her to
+    // read the screen, AND for any coin that was already inside the acceptor
+    // when the slot shut: its pulses must finish before the motor starts,
+    // because the coin line is muted while the coil turns.
+    if (!stocked)
+    {
+      LOGLN(F("Stock ran out before the motor started. Credit stays."));
+      enterEmpty();
+      break;
+    }
+    bool quiet = !coinBurstInProgress();
+    if (quiet && reached(now, paidSinceMs + paidHoldMs))
+    {
       startVend("credit met");
+    }
+    else if (reached(now, paidSinceMs + PAID_MAX_WAIT_MS))
+    {
+      LOGLN(F("Coin line still busy at PAID_MAX_WAIT_MS. Starting anyway."));
+      startVend("credit met");
+    }
     break;
   }
 
@@ -4556,14 +4786,9 @@ void loop()
       vendCount++;
       buttonRetries = 0; // it worked, so the retry budget is whole again
       lastRefusalMs = 0;
-      // If there is change, name the amount rather than just saying some
-      // exists. She is about to be asked to add to it.
-      char l2[17];
-      if (credit > 0)
-        snprintf(l2, sizeof(l2), "CREDIT KSH %u", credit);
-      else
-        l2[0] = 0;
-      say("TAKE YOUR PAD", l2);
+      // A request, not an order. Any change left over is named on the
+      // THANK YOU screen that follows.
+      say("PLEASE COLLECT", "YOUR PAD :)");
       beep(TONE_VEND_HZ, TONE_VEND_MS);
       messageUntilMs = millis() + MESSAGE_HOLD_MS;
       state = ST_DELIVERED;
@@ -4624,9 +4849,19 @@ void loop()
     padSeen();
     if (reached(now, messageUntilMs))
     {
-      showIdle();
       state = ST_IDLE;
       LOGLN(F("Ready."));
+      if (credit >= PAD_PRICE && !holdForCollection)
+      {
+        // More pads in this sale (a KSh 40). IDLE moves straight to PAID on
+        // the next pass, and the slot stays shut in between.
+      }
+      else
+      {
+        orderPads = 0;
+        orderIndex = 0;
+        showThanks(); // the slot reopens underneath it
+      }
     }
     break;
   }
@@ -4745,8 +4980,8 @@ void loop()
   }
 
   // ---- Cycle the idle prompt so the whole of it gets read ----
-  if (state == ST_IDLE && backlightOn && lcdOk && reached(now, idleRotateMs) &&
-      (credit == 0 || holdForCollection))
+  if (state == ST_IDLE && backlightOn && lcdOk && !bannerUp &&
+      reached(now, idleRotateMs) && (credit == 0 || holdForCollection))
   {
     idleRotateMs = now + FAULT_ROTATE_MS;
     if (holdForCollection)

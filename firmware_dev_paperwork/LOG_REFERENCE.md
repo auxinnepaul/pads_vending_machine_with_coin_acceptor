@@ -193,8 +193,9 @@ Pulses may be being merged. If counts read **low**, lower
 **`RECOGNISED : NO`** prints the exact table line to add. The customer has paid
 and is owed nothing until SECTION 2 is fixed.
 
-**`MEANING : machine is DISPENSING — banked toward the next pad`** is normal: a
-coin arriving mid-vend buys the next pad.
+**`MEANING : machine is PAID / DISPENSING — banked toward the next pad`** is
+normal but should be rare: the slot is shut during a sale, so this is a coin
+that was already inside the acceptor when it shut. It buys the next pad.
 
 **`MEANING : machine is FAULT — coin logged, NOT banked`** — the machine cannot
 promise a pad, so it must not take the money onto the meter. That coin is lost;

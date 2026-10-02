@@ -870,9 +870,12 @@ IDLE ──coin──► decode pulses ──unknown──► reject tone, logge
                      │
                   known coin
                      ▼
-              credit += value ──below price──► "NEED KSH n MORE"
-                     │
+              credit += value ──below price──► "THAT IS KSH 5!", then
+                     │                          "ADD KSH 15 MORE"
                  price met
+                     ▼
+     PAID: slot shuts, "KSH 20 - PAID!" for 2 s,
+     motor waits for the coin line to go quiet
                      ▼
               check beam is clear
                      │
@@ -880,9 +883,10 @@ IDLE ──coin──► decode pulses ──unknown──► reject tone, logge
                      │
                   clear
                      ▼
-               DISPENSING ──beam breaks──► DELIVERED ──2.5 s──► IDLE
-                     │
-              timeout (3 s)
+               DISPENSING ──beam breaks──► DELIVERED ──2.5 s──► THANK YOU, IDLE
+                     │                     (or straight back to PAID
+                     │                      for the second pad of a KSh 40)
+              DISPENSE_TIMEOUT_MS
                      │
        ┌─────────────┴─────────────┐
   stock says empty            stock says full,
@@ -895,14 +899,31 @@ IDLE ──coin──► decode pulses ──unknown──► reject tone, logge
 IDLE also drops to **EMPTY** the moment the stock switch opens, and climbs
 back out on its own when it closes.
 
+### What the screen says during a sale
+
+| Moment | Top line | Bottom line | Held |
+|---|---|---|---|
+| A coin, still short | `THAT IS KSH 5!` | `TOTAL KSH 5` | 1.5 s (`COIN_ACK_MS`) |
+| ...then | `ADD KSH 15 MORE` | `TIME LEFT 1:58`, counting down | until the next coin |
+| Price met | `KSH 20 - PAID!` | `A FULL PAD!` | 2 s (`PAID_HOLD_MS`), slot shut |
+| KSh 40 | `KSH 40 - PAID!` | `2 PADS COMING!` | 2 s |
+| Motor running | `HERE IT COMES...` | `PAD 1 OF 2` when there are two | until the pad drops |
+| Delivered | `PLEASE COLLECT` | `YOUR PAD :)` | 2.5 s (`MESSAGE_HOLD_MS`) |
+| Second of two | `ONE MORE COMING` | `PAD 2 OF 2` | 1 s (`NEXT_PAD_HOLD_MS`) |
+| Done | `THANK YOU!` | `HAVE A GOOD DAY`, or `CREDIT KSH 5` if change is left | 2 s (`THANKS_MS`), slot open again |
+
+Nothing here blocks: the holds are deadlines in `loop()`, so the beam and the
+coin line are watched the whole time. Full reasoning in
+`firmware_dev_paperwork/DESIGN_DECISIONS.md`, decision 22b.
+
 ### Part payment and the countdown
 
 Somebody puts **KSh 10** into a **KSh 20** machine. The screen keeps asking for
 the rest and counts down, refreshed once a second:
 
 ```
-CREDIT KSH 10
-ADD 10 IN 1:35
+ADD KSH 10 MORE
+TIME LEFT 1:35
 ```
 
 Default wait is **two minutes** (`CREDIT_TIMEOUT_MS`, SECTION 5). If the
@@ -913,8 +934,8 @@ countdown reaches zero the credit is cleared and the machine returns to
 expires — the screen just keeps asking, with no countdown:
 
 ```
-CREDIT KSH 10
 ADD KSH 10 MORE
+TOTAL KSH 10
 ```
 
 Try either live with `w<ms>`; `w0` is forever. Shorten it to something like
@@ -933,8 +954,8 @@ KSh 5 on the meter, she inserts KSh 20 → total 25 → a pad is dispensed → K
 change → straight back to asking for the rest:
 
 ```
-CREDIT KSH 5
-ADD 15 IN 1:55
+ADD KSH 15 MORE
+TIME LEFT 1:55
 ```
 
 **Both routes land on exactly the same screen**, because one function draws it.
@@ -1285,14 +1306,14 @@ into clearing itself; it has to be released and pressed fresh.
 One rule, derived from the machine's state in one place in `loop()` and nowhere
 else:
 
-**The slot is live in every state except `EMPTY` and `FAULT`** — the two where
-the machine cannot honour a coin.
+**The slot is live only in `IDLE`, while the credit is short of a pad.** It
+shuts the moment the price is met and stays shut through `PAID`,
+`DISPENSING` and `DELIVERED`, as well as in `EMPTY` and `FAULT`.
 
-It deliberately stays open **during a vend.** A coin that lands mid-vend is
-banked and buys the next pad, so there is nothing to protect against, and
-inhibiting for every sale would work the relay twice per vend for no benefit —
-thousands of needless operations over the life of a machine. The relay only
-moves when the machine genuinely goes out of service, which should be rare.
+It shuts during a sale because the coin line is muted while the motor turns:
+a coin whose pulses arrive then is binned, so the money would be taken and
+never credited. That cost of two relay operations per sale is small against a
+relay's 100,000+ rating.
 
 Deriving it from state in a single place means the slot can never disagree with
 what the machine is doing. There is no way to enter a state and forget to open
@@ -1319,12 +1340,11 @@ independently of the state machine. Even a firmware bug cannot leave the coil
 turning. If it ever fires, the console says so and calls it a bug rather than a
 jam.
 
-**A coin that lands mid-vend is honoured, not discarded.** Inhibiting the
-acceptor only stops the *next* coin — one already rolling through the mechanism
-finishes its pulse burst after the vend has started, and the machine physically
-has that money. It goes on the meter and buys the next pad, because the machine
-is about to be back in service anyway. Throwing it away would mean keeping the
-money and giving nothing back.
+**A coin already inside the acceptor when the slot shuts is still counted.**
+Inhibiting only stops the *next* coin; one already rolling through the
+mechanism still finishes its pulses. `PAID` waits for the coin line to go
+quiet (up to `PAID_MAX_WAIT_MS`) before the motor starts and the mute begins,
+so that coin goes on the meter and buys the next pad instead of being lost.
 
 Coins that land while **faulted or out of stock** are logged but **not** banked.
 There the machine genuinely cannot promise a pad, so it must not take the money

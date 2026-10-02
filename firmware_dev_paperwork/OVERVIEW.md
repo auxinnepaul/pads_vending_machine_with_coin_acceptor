@@ -76,24 +76,26 @@ Every timing constant in SECTION 5 is written up the same way: what it
 controls, what goes wrong if too short, what goes wrong if too long, how to
 find the right value on the bench, and its live console command if it has one.
 
-## The five states
+## The six states
 
 | State | Coins | Means |
 |---|---|---|
-| `ST_IDLE` | **accepted** | Waiting for money |
-| `ST_DISPENSING` | accepted | Motor turning, watching the beam |
-| `ST_DELIVERED` | accepted | Pad fell, message holding |
+| `ST_IDLE` | **accepted** while short of a pad | Waiting for money |
+| `ST_PAID` | inhibited | Price met: `KSH 20 - PAID!` for 2 s, waiting for the coin line to go quiet |
+| `ST_DISPENSING` | inhibited | Motor turning, watching the beam |
+| `ST_DELIVERED` | inhibited | Pad fell, `PLEASE COLLECT YOUR PAD` holding |
 | `ST_EMPTY` | inhibited | Stock switch says no pads. **Not a fault**, not latched — returns to service on a refill |
 | `ST_FAULT` | inhibited | Needs a person. Latched |
 
-**The rule the design rests on:** the coin slot is live in every state except
-`EMPTY` and `FAULT` — the two where the machine cannot honour a coin. It is
-derived from the state in **one line** of `loop()` and written nowhere else, so
-the slot can never disagree with what the machine is doing.
+**The rule the design rests on:** the coin slot is live only in `IDLE`, while
+the credit is short of a pad. It is derived from the state in **one line** of
+`loop()` and written nowhere else, so the slot can never disagree with what the
+machine is doing.
 
-It stays open during a vend on purpose: a coin landing mid-vend is banked and
-buys the next pad, so there is nothing to protect against, and inhibiting for
-every sale would work the relay twice per vend for no benefit.
+It shuts during a sale because the coin line is muted while the motor turns,
+and a coin counted then would be lost. A coin already inside the acceptor when
+the slot shuts is still counted: `PAID` waits for the coin line to go quiet
+before the motor starts (`DESIGN_DECISIONS.md` decision 2).
 
 ## How a coin is read
 
@@ -164,7 +166,7 @@ Five rules, each a deliberate answer to *"who loses if this goes wrong"*. They
 are in the file header and in full in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md).
 
 1. **Pay on delivery**, not on motor start
-2. **A coin landing mid-vend is banked**, not discarded
+2. **The slot shuts from "price met" until the pad is collected**, and a coin already inside is still counted
 3. **A full pad's worth of credit is never timed out**
 4. **Part payment expires** — a policy choice, with a countdown on screen
 5. **The meter survives a power cut** — the only thing written to flash
