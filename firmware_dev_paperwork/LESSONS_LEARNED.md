@@ -526,6 +526,36 @@ where a real pad falls through in a fraction of a second.
   called a normal 50 ms repaint a stall. Calibrate a diagnostic's thresholds
   against measured normal behaviour.
 
+### 3.8 A page break turned "no coins" into "coins"
+
+**What happened.** The out-of-order screen paged `OUT OF ORDER - SEE SERIAL -
+NO COINS ARE BEING TAKEN` across the 16-character display. Filled word by
+word, the pages came out as `OUT OF ORDER -` / `SEE SERIAL - NO` /
+`COINS ARE BEING` / `TAKEN`. The builder read the screen and reported that it
+said coins were being taken: the opposite of the truth.
+
+**Lessons.**
+- **On a paged display, each page must stand alone.** People glance; they do
+  not wait for the whole cycle. Put the page breaks in yourself.
+- **Prefer positive statements to negations.** `COIN SLOT CLOSED` cannot be
+  reversed by losing a word; `NO COINS ARE BEING TAKEN` can.
+- **Never show a customer an instruction meant for a technician.**
+  `SEE SERIAL` was replaced with "please call the number above".
+
+### 3.9 A sensor that is only read during a vend can die unnoticed
+
+**What happened.** Unplugging the IR sensor at boot was caught, but unplugging
+it on a running machine was not. The beam debouncer was only polled during a
+vend and just before one, so at rest the machine never looked.
+
+**Lessons.**
+- **Read your safety inputs all the time**, not only when you are about to
+  need them. One `digitalRead` per loop pass costs nothing.
+- **Give an input a defined state when its wire comes off.** A floating pin
+  reads whatever it likes; a 100 kΩ pull-down makes an unplugged sensor read
+  "blocked", which the machine treats safely. Size it against the sensor's
+  own pull-up, or the "clear" level falls toward the logic threshold.
+
 ---
 
 ## Part 4 — How we worked

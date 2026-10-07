@@ -400,6 +400,42 @@ pause on `PAID!` is also the money rule in decision 2.
 the coin line are watched throughout. A coin that arrives during a held screen
 simply updates it.
 
+### 22c. Every page of a paged message must make sense on its own
+
+**Decision (2026-10-08).** Customer messages mark their page breaks with `|`
+instead of leaving the pager to fill 16-character pages word by word, and no
+screen says `SEE SERIAL`; it says `PLEASE CALL THE` / `NUMBER ABOVE`, with the
+number held on the top line.
+
+**Why.** Word-by-word paging split `... - NO COINS ARE BEING TAKEN` as
+`SEE SERIAL - NO` / `COINS ARE BEING` / `TAKEN`. The builder read the last
+two pages and reported that the machine said coins **were** being taken. A
+passer-by may only catch one page, so a negation that lands on the previous
+page reverses the message. "No coins are being taken" is now
+`COIN SLOT CLOSED`, a single page with no negation to lose.
+
+### 22d. A blocked beam at rest is a sensor fault that clears itself
+
+**Decision (2026-10-08).** The beam is read on every pass of `loop()`. If it
+reads BLOCKED for `IR_STUCK_WARN_MS` (5 s) while the machine is idle, the
+machine goes to `FAULT` `CHECK SENSOR` and the slot shuts. That fault, the
+`CHECK SENSOR` refusal before a vend, and a boot halt for `CHUTE BLOCKED`
+**clear themselves** once the beam reads clear for `BEAM_CLEAR_RECOVER_MS`
+(3 s): a boot halt re-runs the whole self-test first.
+
+**Why.** An unplugged sensor (with the 100 kΩ pull-down) or a pad stuck in the
+chute both read BLOCKED, and a machine that cannot see a pad drop must not
+take money. Before, the beam was only read during a vend, so unplugging the
+sensor on a running machine went unnoticed, and fixing it at boot needed the
+button even though the machine could see the fix.
+
+**This is a narrow exception to decision 14 (faults latch).** It applies only
+to faults caused by the beam reading blocked, where a clear beam is direct
+evidence that the cause is gone. A **jam** (no pad within the dispense
+timeout) still latches: the beam is clear during a jam, so a clear beam proves
+nothing there. If an automatic clear fails for any other reason, the machine
+stops trying and waits for a person.
+
 ## CONSOLE
 
 ### 23. Nothing typed at the console is saved

@@ -846,17 +846,32 @@ const uint32_t PAD_SWITCH_DEBOUNCE_MS = 400;
 const uint32_t INHIBIT_SETTLE_MS = 600;
 
 // ---------------------------------------------------------------------------
-//  IR_STUCK_WARN_MS — nag about something sitting in the chute
+//  IR_STUCK_WARN_MS — how long a blocked beam at rest is tolerated
 // ---------------------------------------------------------------------------
 //  WHAT        If the beam reads BLOCKED for this long while the machine sits
-//              idle, the console says so once. Warning only: it does not
-//              fault, does not stop anything, and does not repeat.
-//  TOO SHORT   Console chatter every time a hand passes the chute.
-//  TOO LONG    A blockage sits unreported until a customer finds it for you.
-//  HOW TO SET  Leave it. It exists to put a heads-up in the log before the
-//              next paid vend turns it into a fault.
+//              idle, it goes to FAULT "CHECK SENSOR" and shuts the slot, so
+//              nobody pays into a machine that cannot see a pad drop. That is
+//              what an unplugged sensor looks like (with the 100 k pull-down
+//              on GPIO 27, see WIRING.md), as well as a pad stuck in the chute.
+//              It used to be a console warning only, and the beam was not
+//              even read while idle, so an unplugged sensor went unnoticed.
+//  TOO SHORT   A hand collecting a pad, or reaching into the chute, trips it.
+//  TOO LONG    A dead sensor sits with the slot open for that long.
 //  CONSOLE     none — needs a reflash
 const uint32_t IR_STUCK_WARN_MS = 5000;
+
+// ---------------------------------------------------------------------------
+//  BEAM_CLEAR_RECOVER_MS — how long the beam must read clear to undo that
+// ---------------------------------------------------------------------------
+//  WHAT        A CHECK SENSOR or CHUTE BLOCKED fault caused by a blocked beam
+//              clears ITSELF once the beam has read clear for this long: plug
+//              the sensor back in, or take the pad out, and the machine goes
+//              back to work without anyone holding the button. A boot halt for
+//              a blocked chute re-runs the whole self-test first.
+//              Jams (no pad within the dispense timeout) still latch: the beam
+//              is clear during a jam, so it proves nothing there.
+//  CONSOLE     none — needs a reflash
+const uint32_t BEAM_CLEAR_RECOVER_MS = 3000;
 
 // ---------------------------------------------------------------------------
 //  SOAK TEST  (console command  T<n> )
@@ -1285,6 +1300,9 @@ uint8_t buttonRetries = 0;     // consecutive button clears with no pad delivere
 uint32_t lastRefusalMs = 0;    // rate-limit the out-of-retries message
 bool serviceCycleSeen = false; // stock switch went EMPTY during a fault
 char faultLine2[17] = "";
+bool faultClearsWhenBeamClear = false; // a beam fault, undone by a clear beam
+uint32_t beamClearSinceMs = 0;         // when the beam last turned clear in FAULT
+bool beamClearTiming = false;
 uint8_t faultMsgIdx = 0;
 uint32_t faultRotateMs = 0;
 
@@ -1928,6 +1946,13 @@ void sayLine2(const char *l2)
 //  Copies page `page` into `out` and returns how many pages there are, so the
 //  caller can cycle. Words are never split unless a single word is longer than
 //  the display, in which case it is cut — nothing else can be done with it.
+//
+//  '|' FORCES A PAGE BREAK, and every customer message uses it. Left to fill
+//  pages word by word, "... - NO COINS ARE BEING TAKEN" split as
+//  "SEE SERIAL - NO" / "COINS ARE BEING" / "TAKEN", and the last two pages
+//  read as the exact opposite. Each page has to make sense on its own,
+//  because a passer-by may only catch one of them. Text between two '|' that
+//  is still longer than 16 is word-wrapped as before.
 uint8_t lcdPage(const char *text, uint8_t page, char *out, size_t n)
 {
   uint8_t pages = 0;
@@ -1936,12 +1961,15 @@ uint8_t lcdPage(const char *text, uint8_t page, char *out, size_t n)
 
   while (i < len)
   {
-    while (i < len && text[i] == ' ')
-      i++; // a page never starts on a space
+    while (i < len && (text[i] == ' ' || text[i] == '|'))
+      i++; // a page never starts on a space or a break
     if (i >= len)
       break;
 
-    size_t remaining = len - i;
+    size_t segEnd = i; // this page can run no further than the next '|'
+    while (segEnd < len && text[segEnd] != '|')
+      segEnd++;
+    size_t remaining = segEnd - i;
     size_t take = remaining;
     if (remaining > 16)
     {
@@ -2359,6 +2387,8 @@ void rule()
 void enterFault(const char *line2)
 {
   motorOff();
+  faultClearsWhenBeamClear = false; // only a beam fault sets it, after this
+  beamClearTiming = false;
   orderPads = 0; // the sale is over; credit stays on the meter
   orderIndex = 0;
   bannerUp = false;
@@ -2411,7 +2441,7 @@ void showIdle()
 
   if (holdForCollection)
   {
-    sayPaged("PAD IS PAID FOR", "PRESS THE BUTTON TO COLLECT IT", idleMsgIdx);
+    sayPaged("PAD IS PAID FOR", "PRESS THE BUTTON|TO COLLECT IT", idleMsgIdx);
     idleRotateMs = millis() + FAULT_ROTATE_MS;
     return;
   }
@@ -2562,7 +2592,7 @@ void attemptClear(const char *who, bool fromButton)
   {
     beep(TONE_REJECT_HZ, TONE_REJECT_MS);
     sayAllPages("CHUTE BLOCKED",
-                "PLEASE CLEAR THE CHUTE THEN HOLD THE BUTTON AGAIN", 1400);
+                "PLEASE CLEAR|THE CHUTE, THEN|HOLD THE BUTTON|AGAIN", 1400);
     LOG(F("Refusing to clear ("));
     LOG(who);
     LOGLN(F("): the beam still reads BLOCKED."));
@@ -2585,8 +2615,8 @@ void attemptClear(const char *who, bool fromButton)
       beep(TONE_REJECT_HZ, TONE_REJECT_MS);
       {
         char msg[96];
-        snprintf(msg, sizeof(msg), "OUT OF ORDER - STILL FAULTY - %s",
-                 haltReason[0] ? haltReason : "SEE SERIAL");
+        snprintf(msg, sizeof(msg), "OUT OF ORDER|STILL FAULTY|%s%sPLEASE CALL THE|NUMBER ABOVE",
+                 haltReason, haltReason[0] ? "|" : "");
         sayAllPages(callLine(), msg, 1500);
       }
       LOG(F("Refusing to clear ("));
@@ -3725,6 +3755,7 @@ bool startVend(const char *why)
   {
     LOGLN(F("Refusing to start: the beam already reads BLOCKED."));
     enterFault("CHECK SENSOR");
+    faultClearsWhenBeamClear = true;
     return false;
   }
   char l2[17] = "";
@@ -4291,11 +4322,18 @@ void setup()
   {
     {
       char msg[96];
-      snprintf(msg, sizeof(msg), "OUT OF ORDER - %s - THIS MACHINE NEEDS ATTENTION",
+      snprintf(msg, sizeof(msg), "OUT OF ORDER|%s|PLEASE CALL THE|NUMBER ABOVE",
                haltReason[0] ? haltReason : "SELF-TEST FAILED");
       sayAllPages(callLine(), msg, 1600);
     }
     armClearButtonForNewFault();
+    // Keep the reason on the fault screen for as long as the halt lasts, not
+    // only on the one-shot pages above.
+    strncpy(faultLine2, haltReason[0] ? haltReason : "SELF-TEST FAILED",
+            sizeof(faultLine2) - 1);
+    faultLine2[sizeof(faultLine2) - 1] = 0;
+    // A blocked beam is the one boot failure the machine can see being fixed.
+    faultClearsWhenBeamClear = (strcmp(haltReason, "CHUTE BLOCKED") == 0);
     LOGLN();
     LOGLN(F("HALTED. The self-test found something that would make this"));
     LOGLN(F("machine take money and do the wrong thing with it."));
@@ -4492,6 +4530,12 @@ void loop()
     enterFault("MOTOR RUNAWAY");
   }
 
+  // ---- Read the beam on EVERY pass ----
+  //  padSeen() is a debouncer and only knows what it was last asked. It used
+  //  to be polled only during a vend, so at rest the machine never noticed an
+  //  unplugged sensor or a pad stuck in the chute. One digitalRead per pass.
+  padSeen();
+
   // ---- Live IR watch, for aiming the sensor ----
   if (irWatch)
   {
@@ -4509,14 +4553,43 @@ void loop()
     }
   }
 
-  // ---- A pad sitting in the beam while idle is worth saying out loud ----
+  // ---- A beam that stays blocked at rest: shut the slot ----
+  //  Something is in the chute, or the sensor is unplugged (with the 100 k
+  //  pull-down an unplugged sensor reads BLOCKED). Either way a vend could
+  //  not see its pad drop, so stop taking money now rather than after a
+  //  customer has paid. It clears itself once the beam reads clear again.
   if (state == ST_IDLE && irStable && !irStuckWarned &&
       reached(now, irBlockedSince + IR_STUCK_WARN_MS))
   {
     irStuckWarned = true;
-    LOGLN(F("WARN: the chute has read BLOCKED for a while at rest."));
-    LOGLN(F("      Something is in it, or the sensor needs re-aiming."));
-    LOGLN(F("      The next paid vend will fault rather than run blind."));
+    LOGLN(F("The chute has read BLOCKED at rest for 5 s: something is in it,"));
+    LOGLN(F("or the IR sensor is unplugged. Shutting the coin slot."));
+    enterFault("CHECK SENSOR");
+    faultClearsWhenBeamClear = true;
+  }
+
+  // ---- ...and undo a beam fault once the beam reads clear again ----
+  if (state == ST_FAULT && faultClearsWhenBeamClear)
+  {
+    if (irStable)
+    {
+      beamClearTiming = false;
+    }
+    else if (!beamClearTiming)
+    {
+      beamClearTiming = true;
+      beamClearSinceMs = now;
+    }
+    else if (reached(now, beamClearSinceMs + BEAM_CLEAR_RECOVER_MS))
+    {
+      beamClearTiming = false;
+      LOGLN(F("The beam has read clear for 3 s. Trying to return to service."));
+      attemptClear("the sensor reading clear again", false);
+      // If it is still faulted, something other than the beam is wrong:
+      // leave it for a person rather than retrying every three seconds.
+      if (state == ST_FAULT)
+        faultClearsWhenBeamClear = false;
+    }
   }
 
   // ---- Coins ----
@@ -4903,11 +4976,11 @@ void loop()
       char msg[80];
       if (credit > 0)
         snprintf(msg, sizeof(msg),
-                 "NO COINS ARE BEING TAKEN - YOUR KSH %u IS SAFE AND WAITING",
+                 "COIN SLOT CLOSED|YOUR KSH %u|IS SAFE AND|WAITING FOR YOU",
                  credit);
       else
         snprintf(msg, sizeof(msg),
-                 "NO COINS ARE BEING TAKEN - PLEASE COME BACK LATER");
+                 "COIN SLOT CLOSED|PLEASE COME|BACK LATER");
       sayPaged("SORRY - NO PADS", msg, emptyMsgIdx);
     }
     break;
@@ -4951,27 +5024,29 @@ void loop()
         char msg[120];
         if (credit > 0)
           snprintf(msg, sizeof(msg),
-                   "YOU PAID KSH %u - OUT OF ORDER - CALL THE NUMBER ABOVE"
-                   " - STAFF CHECK COIL AND SENSOR",
+                   "YOU PAID KSH %u|OUT OF ORDER|PLEASE CALL THE|NUMBER ABOVE"
+                   "|STAFF: CHECK THE|COIL AND SENSOR",
                    credit);
         else
           snprintf(msg, sizeof(msg),
-                   "OUT OF ORDER - NO PADS CAN COME OUT - CALL THE NUMBER"
-                   " ABOVE - STAFF CHECK COIL AND SENSOR");
+                   "OUT OF ORDER|CANNOT DISPENSE|PLEASE CALL THE|NUMBER ABOVE"
+                   "|STAFF: CHECK THE|COIL AND SENSOR");
         sayPaged(callLine(), msg, faultMsgIdx);
       }
       else if (credit >= PAD_PRICE)
       {
         // She has paid and has no pad, and the button will try again for her.
         sayPaged("PAID - NO PAD",
-                 "HOLD THE BUTTON FOR 1 SECOND TO TRY AGAIN", faultMsgIdx);
+                 "HOLD THE BUTTON|FOR 1 SECOND|TO TRY AGAIN", faultMsgIdx);
       }
       else
       {
-        // Nobody is owed anything, so it is simply broken.
-        char msg[80];
-        snprintf(msg, sizeof(msg), "OUT OF ORDER - %s - NO COINS ARE BEING TAKEN",
-                 faultLine2[0] ? faultLine2 : "SEE SERIAL");
+        // Nobody is owed anything, so it is simply broken. Never "SEE SERIAL":
+        // that means nothing to somebody standing in a washroom.
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "OUT OF ORDER|%s%sCOIN SLOT CLOSED|PLEASE CALL THE|NUMBER ABOVE",
+                 faultLine2, faultLine2[0] ? "|" : "");
         sayPaged(callLine(), msg, faultMsgIdx);
       }
     }
@@ -4986,7 +5061,7 @@ void loop()
     idleRotateMs = now + FAULT_ROTATE_MS;
     if (holdForCollection)
     {
-      sayPaged("PAD IS PAID FOR", "PRESS THE BUTTON TO COLLECT IT", idleMsgIdx);
+      sayPaged("PAD IS PAID FOR", "PRESS THE BUTTON|TO COLLECT IT", idleMsgIdx);
     }
     else
     {

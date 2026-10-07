@@ -40,7 +40,7 @@ The sketch that goes with this wiring is the one in this repo,
 | **18** | PC817 **pin 4** (collector) | `INPUT_PULLUP`, interrupt on `FALLING`, 75 ms debounce | 10 kΩ from pin 4 to **3V3** | ✅ all four coins decode exactly |
 | **19** | Inhibit relay (relay 2) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot; self-test correct. `n1`/`n0` not yet run |
 | **26** | Motor relay (relay 1) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot |
-| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | — | ✅ self-test: chute clear |
+| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | **100 kΩ pull-down to GND** ⏳ | ✅ self-test: chute clear |
 | **25** | Passive buzzer signal | Tone output | — | ✅ chirps at boot |
 | **21** | Level converter **LV1**, then LCD SDA | I²C SDA | Level converter (section 9) | ✅ LCD found at 0x27 |
 | **22** | Level converter **LV2**, then LCD SCL | I²C SCL | Level converter (section 9) | ✅ |
@@ -98,8 +98,8 @@ that block.
                                    ├──► level converter HV   ✅
                                    └──► LCD VCC               ✅
                                           (~4 cm from the buck: its output
-                                           caps serve the LCD; 100 nF at the
-                                           backpack optional)
+                                           caps serve the LCD)
+                                          + 100 nF at the backpack pins  ✅
 
 ESP32 3V3 pin ──┬──► KY-032 VCC
                 ├──► 10 kΩ pull-up to PC817 pin 4
@@ -265,8 +265,26 @@ relay 1 NO ──────────────┬────────
 ```
 KY-032 VCC ── ESP32 3V3
 KY-032 GND ── common GND
-KY-032 OUT ── GPIO 27
+KY-032 OUT ──┬── GPIO 27
+             └──[100 kΩ]── GND      ⏳ to fit
 ```
+
+**Why the 100 kΩ pull-down.** Without it, an unplugged sensor leaves GPIO 27
+floating. It usually drifts LOW, which reads as "something in the beam", but
+not always; floating HIGH reads as "clear", and the machine would run with no
+sensor and fault every vend as JAMMED. With the pull-down, an unplugged sensor
+**always** reads BLOCKED: the self-test halts at boot, and on a running
+machine the beam reads blocked at rest for 5 s and the slot shuts with
+`CHECK SENSOR`. Plugging it back in clears the fault by itself after 3 s.
+
+**Why 100 kΩ and not less.** The KY-032's output has its own pull-up of about
+10 kΩ. The pull-down forms a divider with it when the beam is clear:
+100 kΩ gives about **3.0 V**; 47 kΩ, or the ESP32's internal ~45 kΩ, only
+about **2.7 V**, too close to the ESP32's 2.5 V threshold for HIGH.
+
+**Check after fitting:** sensor connected and the chute empty, meter on
+GPIO 27 to GND: **about 3.0 V, and at least 2.9 V**. Then unplug the sensor's
+OUT wire: it should read **0 V**.
 
 Output goes LOW when it sees a pad (`IR_DETECTED_IS_LOW = true`). Powered from
 3V3 so its output can never exceed 3.3 V. Console command `i` shows the live
@@ -352,8 +370,9 @@ GPIO 22 ─────── LV2        HV2 ───── LCD SCL
                 LV3, LV4 / HV3, HV4: not used
 
 LCD VCC ── 5 V rail        LCD GND ── common GND
+           + 100 nF soldered across VCC/GND at the backpack pins ✅
            (no separate bulk cap needed when the LCD is a few cm from the
-            buck's output caps; a 100 nF across VCC/GND is optional)
+            buck's output caps)
 ```
 
 The backpack's own pull-ups to 5 V can stay: they are on the HV side now,
@@ -421,7 +440,8 @@ it holds COM3. In order:
 | 100 µF + 100 nF at relay module VCC | ⏳ |
 | 100 nF at acceptor end | ⏳ optional |
 | Level converter + LCD | ✅ LCD at 0x27, idle screen showing |
-| LCD decoupling | ✅ not needed: ~4 cm from the buck's 1000 µF + 100 nF. 100 nF at the backpack optional |
+| LCD decoupling | ✅ 100 nF soldered at the backpack's VCC/GND; no bulk cap needed (~4 cm from the buck's 1000 µF + 100 nF) |
+| 100 kΩ pull-down on GPIO 27 | ⏳ so an unplugged IR sensor always reads BLOCKED |
 
 The measurements and reasoning behind all of this are in
 `FIRMWARE_PROGRESS.md`, in the 2026-09-28 to 2026-09-30 sections.

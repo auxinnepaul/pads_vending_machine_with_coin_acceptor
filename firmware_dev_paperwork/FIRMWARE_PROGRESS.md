@@ -11,7 +11,8 @@ compiles is not a thing that works.
 
 # ▶ RESUME HERE
 
-**State as of 2026-10-01, end of day.** Everything is committed and pushed
+**State as of 2026-10-07.** The sale flow (slot shut during a sale, the new
+screens) is verified on the board. Earlier state as of 2026-10-01, end of day: Everything is committed and pushed
 (`d125a1d`); the board runs exactly that build plus the local
 `service_contact.h`.
 
@@ -78,7 +79,9 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 
 ### Next session should
 
-0. **Bench-test the new sale flow** (2026-10-02 section: test plan). Then commit it.
+**At commissioning:** go through "Questions for Rebecca at commissioning" at the top of `IMPROVEMENTS_BACKLOG.md`, then set the firmware to her answers.
+
+0. **Fit the 100 kΩ pull-down on GPIO 27** (the sensor fixes are verified; the pull-down makes unplug detection independent of how the pin floats).
 1. **Build the chute and load the coil with real pads.**
 2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
 3. **The 50-cycle soak** — the number the client asked for.
@@ -88,6 +91,80 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 **Flashing on another computer:** create `service_contact.h` from
 `service_contact.example.h` first, or the fault screen shows the placeholder.
 The number is deliberately not in git.
+
+---
+
+## 2026-10-08 — Sensor faults: read the beam always, clear by themselves; screens that can't be misread
+
+**Status: ✅ verified on hardware 2026-10-08** (results at the end of this
+section). Hardware still to fit: 100 kΩ pull-down on GPIO 27.
+
+**Reported by the builder:**
+1. The fault screen read "COINS ARE BEING TAKEN". The pager filled pages word
+   by word and split `... - NO COINS ARE BEING TAKEN` after the "NO".
+2. With the sensor unplugged at boot, the machine halted correctly, but
+   plugging it back in did nothing until the button was held.
+3. Unplugging the sensor on a running machine was not noticed at all.
+4. `SEE SERIAL` on a customer screen means nothing.
+
+**Causes:** (1) word-by-word paging; (2) faults latch by design, even when the
+machine can see the fix; (3) the beam debouncer was only polled during a vend,
+so at rest nothing read the sensor, and GPIO 27 floats when the sensor is
+unplugged; (4) the boot halt never set the fault line, so the rotating fault
+screen fell back to `SEE SERIAL`.
+
+**Fixes:**
+- `lcdPage()` honours `|` as a forced page break. Every customer message now
+  pages deliberately (e.g. `OUT OF ORDER` / `CHUTE BLOCKED` /
+  `COIN SLOT CLOSED` / `PLEASE CALL THE` / `NUMBER ABOVE`). No screen says
+  `SEE SERIAL`; "no coins are being taken" is now `COIN SLOT CLOSED`.
+- A boot halt copies its reason into the fault line, so it stays on screen.
+- `padSeen()` runs on every pass. A beam blocked at rest for 5 s now goes to
+  `FAULT CHECK SENSOR` and shuts the slot (was a console warning only).
+- Beam faults (that one, the `CHECK SENSOR` refusal before a vend, and a boot
+  halt for `CHUTE BLOCKED`) clear themselves once the beam reads clear for
+  3 s; the boot case re-runs the self-test. Jams still latch.
+- WIRING.md: **100 kΩ pull-down on GPIO 27**, so an unplugged sensor always
+  reads BLOCKED. (47 kΩ was suggested first and was wrong: against the
+  sensor's ~10 kΩ pull-up it, like the internal ~45 kΩ, leaves the clear
+  level at ~2.7 V, too near the 2.5 V threshold. 100 kΩ gives ~3.0 V.)
+
+Docs: DESIGN_DECISIONS 22c and 22d, LESSONS_LEARNED 3.8 and 3.9, WIRING.
+
+**Bench test plan:**
+1. Boot with the sensor unplugged: `OUT OF ORDER` / `CHUTE BLOCKED` /
+   `COIN SLOT CLOSED` / `PLEASE CALL THE` / `NUMBER ABOVE`, and it stays on
+   `CHUTE BLOCKED`. Plug it back in: within ~3 s the self-test re-runs and the
+   machine returns to service on its own.
+2. Running and idle, unplug the sensor: after ~5 s, `CHECK SENSOR`, relay
+   click (slot shut). Plug back in: ~3 s later, back in service.
+   (Without the pull-down this depends on which way the pin floats.)
+3. Hold a finger in the chute for 5 s at rest: same as test 2.
+4. A jam (KSh 20, no finger): `JAMMED` still needs the button.
+
+**Bench results 2026-10-08 ✅**
+
+| Test | Log | Result |
+|---|---|---|
+| Unplugged at boot | `FAIL: chute is BLOCKED` → `HALTED` → replugged → `The beam has read clear for 3 s` → self-test re-run `PASS` → `ENABLED` | recovered with no button |
+| Unplugged while running | `BLOCKED at rest for 5 s` → `CHECK SENSOR`, slot `INHIBITED` → replugged → back in service | ✅ (pull-down not yet fitted; this board's pin floated LOW) |
+| Finger in the chute | same | ✅ |
+| Jam | `JAMMED` ×4, credit kept every time, attempts 3 → 0, button needed each time | jams still latch |
+
+**Attendant recovery once the retries are spent** (asked by the builder):
+1. Fix the jam, then lift the pads out and put them back. The stock switch
+   cycling while faulted is treated as a service visit: retries reset and the
+   owed pad dispenses at once. No tools.
+2. EN reset on the ESP32 (inside the box). The credit survives in flash; the
+   machine then holds the pad (`PAD IS PAID FOR` / `PRESS THE BUTTON TO
+   COLLECT IT`) until a button press or a coin.
+3. `x` from a laptop.
+
+**Open policy question for the client:** if the payer has left before the
+jam is fixed, the held pad goes to the next person who presses the button.
+Whether staff should be able to cancel that credit is the client's call.
+Logged as **Q1 in `IMPROVEMENTS_BACKLOG.md` → "Questions for Rebecca at
+commissioning"**, to ask on the day and then implement as she decides.
 
 ---
 
@@ -103,6 +180,9 @@ contact that breaks for a fraction of a millisecond under motor and relay
 vibration has the same effect as a supply dip. The builder has since soldered
 the LCD wiring (still through the level converter, I²C lines short and
 crossing nothing).
+
+**Fitted 2026-10-08:** a 100 nF ceramic soldered across the LCD backpack's
+VCC and GND pins.
 
 **LCD decoupling dropped from the to-do list.** The LCD is about 4 cm from the
 buck's output, whose 1000 µF + 100 nF already serve as its local
@@ -120,7 +200,8 @@ started" and returns, so the sketch's `Wire.setClock(100000)` stays in effect.
 
 ## 2026-10-02 — Shut the slot during a sale, and make the sale talk
 
-**Status: compiles clean, ⏳ not yet run on the board.**
+**Status: ✅ verified on hardware 2026-10-07** (flashed from the commit,
+`fbbaf4f`; results at the end of this section).
 
 ### The money hole
 
@@ -168,6 +249,19 @@ rule), LOG_REFERENCE, LESSONS_LEARNED 2.11.
 4. **KSh 40:** `2 PADS COMING!`, `PAD 1 OF 2`, collect, `ONE MORE COMING`,
    `PAD 2 OF 2`, collect, THANK YOU. Slot shut throughout.
 5. `s`: state names, and loop max still low.
+
+### Bench results 2026-10-07 ✅
+
+| Test | Log | Result |
+|---|---|---|
+| 4 × KSh 5 | `INHIBITED` → `Price met — pad 1 of 1. Slot shut` → motor → delivered → `ENABLED` | slot shut before the motor, reopened after |
+| 2 × KSh 10, KSh 20 | same sequence | ✅ |
+| KSh 40 | `pad 1 of 2` → delivered → `pad 2 of 2` → delivered → `ENABLED` | slot stayed shut between the two pads |
+| KSh 40, first try | `Refusing to start: the beam already reads BLOCKED` → `CHECK SENSOR` | the finger was in the beam during the PAID pause; the machine refused to run blind, kept KSh 40, and one retry delivered both pads |
+| KSh 20, no finger | `No pad in 7000 ms` → `JAMMED`, credit kept → retry → delivered | money kept through the fault |
+
+The builder confirmed the screens worked. The CHECK SENSOR fault cannot
+happen with real pads, which are never in the beam before the motor turns.
 
 ---
 

@@ -6,6 +6,36 @@ Ordered by what unblocks the most.
 
 ---
 
+## Questions for Rebecca at commissioning
+
+**Ask her, then set the firmware the way she wants.** These are business
+decisions about her customers' money, not engineering ones.
+
+**Q1. A paid pad, after a jam, when the customer has left.** A customer pays,
+the machine jams, the three retries run out, and the screen says to call the
+number. If she has gone before staff fix it, the KSh 20 stays on the meter
+(saved in flash) and the pad is held. Today it goes to **the next person who
+presses the button or inserts a coin**.
+  - **(a) Keep it** (current behaviour): the pad is honoured, but possibly to
+    a stranger.
+  - **(b) Let staff cancel it**, e.g. as part of the service visit (lifting
+    the pads out and back) or a long button hold inside the door. The money
+    stays in the box; the business keeps it.
+  - **(c) Let it expire** after a set time, like part payment does.
+
+  Whatever she picks, the payer can only be refunded by a person: the machine
+  has no way to return coins.
+
+**Q2. Part payment** (backlog item 7). Someone puts in KSh 5 or 10 and walks
+away. After `CREDIT_TIMEOUT_MS` (2 minutes now) it is cleared and the
+business keeps it. Longer, or never (`0`), means it eventually buys a pad for
+whoever comes next.
+
+**Q3. Confirm the basics:** price KSh 20; coins accepted 5 / 10 / 20 / 40;
+the service number shown on the fault screen.
+
+---
+
 ## Blocking the demo
 
 ### 1. ~~Wire the LCD~~ ✅ 2026-10-01
@@ -46,7 +76,7 @@ Set in `service_contact.h`, which is local only and in `.gitignore`; copy
 `service_contact.example.h` to create it on another computer. The number is
 deliberately not in git.
 
-### 7. Decide the part-payment policy with the client
+### 7. Decide the part-payment policy with the client (see Q2 above)
 
 `CREDIT_TIMEOUT_MS` is two minutes. No value returns the money — it only
 decides whether abandoned part payment stays with the business or eventually
