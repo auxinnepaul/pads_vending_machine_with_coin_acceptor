@@ -11,7 +11,7 @@ Ordered by what unblocks the most.
 ### 1. ~~Wire the LCD~~ ✅ 2026-10-01
 
 Wired through an I²C level converter (`WIRING.md` §9), found at 0x27. Still
-to fit: 100 µF + 100 nF at the LCD.
+needed: 100 µF + 100 nF at the LCD, since it sits ~4 cm from the buck's output caps.
 
 ### 2. Settle the inhibit relay polarity
 
@@ -125,7 +125,7 @@ Out of scope for this build. Option D in the feasibility study.
 - **Per-state loop max.** `loop max` is one number for everything. Splitting
   it by state would show whether the 227 ms pass is before or during the
   coil's turn. Worth it only if the soak shows a missed drop.
-- **Fit the TVS (P6KE15A) and the relay-module and LCD decoupling.** Parts,
+- **Fit the TVS (P6KE15A) and the relay-module decoupling.** Parts,
   not code; see `WIRING.md` §2.
 
 - **`CLEAR_BTN_HOLD_MS`** is 1 second. Watch a real customer use it before

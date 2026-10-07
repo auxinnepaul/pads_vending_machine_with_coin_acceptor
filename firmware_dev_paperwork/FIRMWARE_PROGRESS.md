@@ -59,7 +59,6 @@ is **mechanical**: a chute, real pads, and the soak.
 |---|---|
 | **TVS on the 12 V block** | Not bought. P6KE15A, band to +12 V |
 | **100 µF + 100 nF at the relay module VCC** | Not fitted. Part of the physical fix for relay/stock-switch coupling |
-| **100 µF + 100 nF at the LCD** | Not fitted |
 | **Real drop times** | No chute. Every timing so far is a finger at the IR sensor |
 | **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
@@ -83,12 +82,39 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 1. **Build the chute and load the coil with real pads.**
 2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
 3. **The 50-cycle soak** — the number the client asked for.
-4. Buy and fit the TVS; fit the relay-module and LCD decoupling.
+4. Buy and fit the TVS; fit the relay-module decoupling. (LCD decoupling not needed: see the 2026-10-07 note.)
 5. Decide `k`/`l`/`L`.
 
 **Flashing on another computer:** create `service_contact.h` from
 `service_contact.example.h` first, or the fault screen shows the placeholder.
 The number is deliberately not in git.
+
+---
+
+## 2026-10-07 — Garbled LCD once on jumper wires; soldered
+
+The sale-flow build (`fbbaf4f`) was flashed by the builder from the Arduino
+IDE and is running on the board. Its bench test plan (2026-10-02 section) has
+not been reported yet.
+
+The display garbled once with the new firmware, while the LCD was connected
+with Dupont jumper wires, and cleared itself on the next rebuild. A push-on
+contact that breaks for a fraction of a millisecond under motor and relay
+vibration has the same effect as a supply dip. The builder has since soldered
+the LCD wiring (still through the level converter, I²C lines short and
+crossing nothing).
+
+**LCD decoupling dropped from the to-do list.** The LCD is about 4 cm from the
+buck's output, whose 1000 µF + 100 nF already serve as its local
+decoupling; the wire inductance over that distance is negligible. A 100 nF
+across the backpack's VCC/GND is optional.
+
+**Not changing the I²C clock.** A suggestion to drop it to 10 kHz was
+considered and rejected: the garbling is a power/contact effect, not an I²C
+signal-integrity one, and at 10 kHz a full repaint would take ~0.4–0.5 s,
+bringing back the blind spot at the start of every vend. Checked in the ESP32
+core 2.0.11 source: the LCD library's second `Wire.begin()` logs "Bus already
+started" and returns, so the sketch's `Wire.setClock(100000)` stays in effect.
 
 ---
 

@@ -97,7 +97,9 @@ that block.
                                    ├──► buzzer VCC
                                    ├──► level converter HV   ✅
                                    └──► LCD VCC               ✅
-                                          + 100 µF 16 V + 100 nF   ⏳
+                                          (~4 cm from the buck: its output
+                                           caps serve the LCD; 100 nF at the
+                                           backpack optional)
 
 ESP32 3V3 pin ──┬──► KY-032 VCC
                 ├──► 10 kΩ pull-up to PC817 pin 4
@@ -321,6 +323,12 @@ is off.
 
 ## 9. LCD through the I²C level converter ✅
 
+**Solder it, don't use jumper wires.** On 2026-10-07 the display garbled once
+while it was on Dupont jumpers, and cleared itself on the next rebuild. A
+push-on contact that breaks for a fraction of a millisecond under motor and
+relay vibration has the same effect as a supply dip. It has been soldered
+since, with the I²C lines short and crossing nothing.
+
 **Why:** the LCD backpack runs on 5 V and pulls SDA and SCL up to 5 V. ESP32
 pins are rated for 3.6 V. The converter translates between the two, so the
 ESP32 side only ever sees 3.3 V.
@@ -344,7 +352,8 @@ GPIO 22 ─────── LV2        HV2 ───── LCD SCL
                 LV3, LV4 / HV3, HV4: not used
 
 LCD VCC ── 5 V rail        LCD GND ── common GND
-           + 100 µF 16 V + 100 nF at the LCD
+           (no separate bulk cap needed when the LCD is a few cm from the
+            buck's output caps; a 100 nF across VCC/GND is optional)
 ```
 
 The backpack's own pull-ups to 5 V can stay: they are on the HV side now,
@@ -412,7 +421,7 @@ it holds COM3. In order:
 | 100 µF + 100 nF at relay module VCC | ⏳ |
 | 100 nF at acceptor end | ⏳ optional |
 | Level converter + LCD | ✅ LCD at 0x27, idle screen showing |
-| 100 µF + 100 nF at the LCD | ⏳ |
+| LCD decoupling | ✅ not needed: ~4 cm from the buck's 1000 µF + 100 nF. 100 nF at the backpack optional |
 
 The measurements and reasoning behind all of this are in
 `FIRMWARE_PROGRESS.md`, in the 2026-09-28 to 2026-09-30 sections.
