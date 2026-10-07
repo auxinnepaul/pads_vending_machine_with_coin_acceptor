@@ -34,6 +34,25 @@ whoever comes next.
 **Q3. Confirm the basics:** price KSh 20; coins accepted 5 / 10 / 20 / 40;
 the service number shown on the fault screen.
 
+**Q4. How long the screen stays lit when nobody is using it.** Today the
+backlight goes off after **2 minutes** idle (`BACKLIGHT_TIMEOUT_MS`); the text
+stays readable in the dark, and a coin or the retry button lights it again.
+  - **Shorter or keep 2 min:** a dark washroom stays dark; less glare.
+  - **Longer:** a lit screen is easier to notice and read from the door.
+  - **Never off** (`0`): always lit. The cost is small on mains power and
+    the backlight LEDs are rated for tens of thousands of hours.
+
+  Whatever she picks, it only changes the timing; waking by coin and button
+  stays.
+
+**Q5. Sound on or off.** Today the machine beeps: a short high note when a
+coin goes in, a low one when a coin is refused, a brief one when the pad
+drops, a long low one on a fault. It is a public washroom and a customer may
+prefer the machine not to announce her.
+  - **On** (`SOUND_ON = true`, current): confirmation she can hear.
+  - **Off** (`SOUND_ON = false`): silent; the screen still says everything.
+    The bench test `b` still chirps either way.
+
 ---
 
 ## Blocking the demo

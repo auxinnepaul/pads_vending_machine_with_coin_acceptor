@@ -81,7 +81,7 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 
 **At commissioning:** go through "Questions for Rebecca at commissioning" at the top of `IMPROVEMENTS_BACKLOG.md`, then set the firmware to her answers.
 
-0. **Fit the 100 kΩ pull-down on GPIO 27** (the sensor fixes are verified; the pull-down makes unplug detection independent of how the pin floats).
+0. **100 kΩ pull-down on GPIO 27: running without it for now, by the builder's decision (2026-10-08). Fit it before a site install.** Everything works with the sensor connected; without it, an unplugged sensor is caught only if GPIO 27 floats LOW (it did on this board). The one money risk is a floating pin flickering during a vend and faking a pad drop.
 1. **Build the chute and load the coil with real pads.**
 2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
 3. **The 50-cycle soak** — the number the client asked for.
@@ -91,6 +91,46 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 **Flashing on another computer:** create `service_contact.h` from
 `service_contact.example.h` first, or the fault screen shows the placeholder.
 The number is deliberately not in git.
+
+---
+
+## 2026-10-08 (later) — The buzzer coil carried current between every beep
+
+**Status: ✅ verified on hardware.** Buzzer module VCC moved to the ESP32's
+3V3; the module is now cold at idle (it was warm), and the beep is cleaner.
+
+**Reported by the builder:** the buzzer works but the module gets slightly warm
+when the board runs for a long time.
+
+**Cause, confirmed in the source.** The module (ASK Electronics passive buzzer)
+drives its coil with a 9012 PNP: the coil is on while the input is LOW. The
+firmware silenced it with `ledcWriteTone(ch, 0)`, which in ESP32 core 2.0.11
+is `ledcWrite(ch, 0)`: 0% duty, a steady LOW. So between beeps the transistor
+was fully on and DC flowed through the coil the whole time. A passive buzzer
+makes no sound on DC, so nothing was heard; the coil just got warm.
+
+A firmware fix alone is not enough while the module is on 5 V: a 3.3 V HIGH
+leaves ~1.7 V across the PNP's emitter-base and it stays partly on. The same
+lesson as the active-LOW relay (`LESSONS_LEARNED.md` 1.4).
+
+**Fix.** `buzzerSilence()` takes the pin off the PWM channel and drives it
+HIGH; `beep()` reattaches it. Power the module from the ESP32's 3V3 so HIGH
+turns the PNP fully off (WIRING.md section 6).
+
+**To verify:** after moving VCC to 3V3 and flashing, the boot chirp and coin
+beeps still sound; idle, GPIO 25 reads ~3.3 V and the module stays cold.
+
+**Flashed 2026-10-08, buzzer VCC moved to 3V3:** boot chirp and coin beep
+both sound, and the builder reports the beep is **cleaner** than before (the
+coil now starts each beep from rest instead of already carrying DC). Idle
+temperature: **cold** (checked after several minutes; previously warm).
+The builder had swapped the module for another, thinking it faulty, and was
+about to buy a new one: the part was fine, the circuit was not.
+
+**Also added: `SOUND_ON`** (SECTION 6, default `true`). `false` makes the
+machine silent; the screen still says everything and the bench test `b` still
+chirps. A client decision: Q5 in "Questions for Rebecca at commissioning".
+Flashed and verified: boot chirp and `b` play with `SOUND_ON = true`.
 
 ---
 

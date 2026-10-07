@@ -915,6 +915,13 @@ const uint32_t SOAK_GAP_MS = 2000;
 //  and buzzerService() in loop() stops it when the time is up. A vending
 //  machine must never be sitting in delay() while a coin is going in.
 //
+// SOUND_ON — the machine's sounds, on or off. The client's decision
+// (IMPROVEMENTS_BACKLOG.md, "Questions for Rebecca at commissioning", Q5).
+//   true  = coin, reject, vend and fault tones, and the boot chirp
+//   false = silent; the screen still says everything. The console's  b
+//           still chirps, so the buzzer can be checked on the bench.
+const bool SOUND_ON = true;
+
 const uint16_t TONE_COIN_HZ = 2200;
 const uint16_t TONE_COIN_MS = 60;
 const uint16_t TONE_REJECT_HZ = 600;
@@ -1800,20 +1807,50 @@ const uint8_t BUZZER_LEDC_CH = 0;
 uint32_t buzzUntilMs = 0;
 bool buzzing = false;
 
+// SILENT MEANS THE PIN HELD HIGH, NOT LOW.
+//
+//  The buzzer module switches its coil with a 9012, a PNP transistor: the
+//  coil is ON while the input is LOW. A passive buzzer makes no sound on
+//  steady DC, so a pin left LOW between beeps is silent but drives current
+//  through the coil the whole time, and the module ran warm.
+//  ledcWriteTone(ch, 0), which this used to silence with, sets 0% duty: LOW.
+//  So between beeps the pin is taken off the PWM channel and driven HIGH.
+//
+//  HIGH only turns the PNP fully off if the module's VCC is the same 3.3 V.
+//  From a 5 V VCC a 3.3 V HIGH still leaves ~1.7 V across emitter-base and
+//  the transistor stays partly on, so the module is powered from the ESP32's
+//  3V3 pin (WIRING.md section 6).
+void buzzerSilence()
+{
+#if ESP_ARDUINO_VERSION_MAJOR < 3
+  ledcDetachPin(PIN_BUZZER);
+#else
+  noTone(PIN_BUZZER);
+#endif
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, HIGH);
+}
+
 void buzzerInit()
 {
 #if ESP_ARDUINO_VERSION_MAJOR < 3
   ledcSetup(BUZZER_LEDC_CH, 2000, 8);
-  ledcAttachPin(PIN_BUZZER, BUZZER_LEDC_CH);
-  ledcWriteTone(BUZZER_LEDC_CH, 0);
-#else
-  pinMode(PIN_BUZZER, OUTPUT);
 #endif
+  buzzerSilence();
 }
 
+// Plays whatever SOUND_ON says. Use toneOut() only for the bench test.
+void toneOut(uint16_t hz, uint16_t ms);
 void beep(uint16_t hz, uint16_t ms)
 {
+  if (SOUND_ON)
+    toneOut(hz, ms);
+}
+
+void toneOut(uint16_t hz, uint16_t ms)
+{
 #if ESP_ARDUINO_VERSION_MAJOR < 3
+  ledcAttachPin(PIN_BUZZER, BUZZER_LEDC_CH); // back onto the PWM channel
   ledcWriteTone(BUZZER_LEDC_CH, hz);
 #else
   tone(PIN_BUZZER, hz);
@@ -1827,11 +1864,7 @@ void buzzerService()
   if (!buzzing || !reached(millis(), buzzUntilMs))
     return;
   buzzing = false;
-#if ESP_ARDUINO_VERSION_MAJOR < 3
-  ledcWriteTone(BUZZER_LEDC_CH, 0);
-#else
-  noTone(PIN_BUZZER);
-#endif
+  buzzerSilence();
 }
 
 // A delay that still lets the buzzer stop on time. Use this, never delay(),
@@ -3260,8 +3293,16 @@ bool selfTest(bool verbose)
   }
 
   LOGLN(F("[9] BUZZER"));
-  LOGLN(F("  One short chirp now. Silence means check GPIO 25."));
-  beep(TONE_COIN_HZ, TONE_COIN_MS);
+  if (SOUND_ON)
+  {
+    LOGLN(F("  One short chirp now. Silence means check GPIO 25."));
+    beep(TONE_COIN_HZ, TONE_COIN_MS);
+  }
+  else
+  {
+    LOGLN(F("  Sound is OFF (SOUND_ON = false): the machine plays no tones."));
+    LOGLN(F("  Type  b  to check the buzzer anyway."));
+  }
 
   rule();
   LOGLN(ok ? F("SELF-TEST: PASS")
@@ -3973,8 +4014,8 @@ void handleCommand(char *s)
     repaintForState();
     break;
   case 'b':
-    LOGLN(F("Chirp."));
-    beep(TONE_VEND_HZ, TONE_VEND_MS);
+    LOGLN(SOUND_ON ? F("Chirp.") : F("Chirp (the bench test plays even with SOUND_ON = false)."));
+    toneOut(TONE_VEND_HZ, TONE_VEND_MS);
     break;
 
   case 'n':

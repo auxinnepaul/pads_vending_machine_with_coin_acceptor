@@ -60,8 +60,8 @@ corrupts the display.
               └─ LM2596 → 5.0 V ─┬─ ESP32 VIN
                                  │     └─ ESP32 3V3 → KY-032 VCC
                                  ├─ I2C LCD          + 100 µF, 100 nF at it
-                                 ├─ relay module VCC (both channels)
-                                 └─ buzzer
+                                 └─ relay module VCC (both channels)
+          (buzzer module VCC from ESP32 3V3, see WIRING.md section 6)
 ```
 
 **[`firmware_dev_paperwork/WIRING.md`](firmware_dev_paperwork/WIRING.md) is the

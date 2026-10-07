@@ -41,7 +41,7 @@ The sketch that goes with this wiring is the one in this repo,
 | **19** | Inhibit relay (relay 2) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot; self-test correct. `n1`/`n0` not yet run |
 | **26** | Motor relay (relay 1) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot |
 | **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | **100 kΩ pull-down to GND** ⏳ | ✅ self-test: chute clear |
-| **25** | Passive buzzer signal | Tone output | — | ✅ chirps at boot |
+| **25** | Passive buzzer module `I/O` | Tone output; **held HIGH when silent** | Module VCC from **3V3**, not 5 V | ✅ chirps; module cold at idle |
 | **21** | Level converter **LV1**, then LCD SDA | I²C SDA | Level converter (section 9) | ✅ LCD found at 0x27 |
 | **22** | Level converter **LV2**, then LCD SCL | I²C SCL | Level converter (section 9) | ✅ |
 | **23** | Retry / jam-clear button, other side to GND | `INPUT_PULLUP`, held 1 s | — | 🔌 |
@@ -94,14 +94,14 @@ that block.
                          5 V RAIL ─┼──► Schottky ──► ESP32 VIN
                                    ├──► relay module VCC (both relays)
                                    │      + 100 µF 16 V + 100 nF   ⏳
-                                   ├──► buzzer VCC
                                    ├──► level converter HV   ✅
                                    └──► LCD VCC               ✅
                                           (~4 cm from the buck: its output
                                            caps serve the LCD)
                                           + 100 nF at the backpack pins  ✅
 
-ESP32 3V3 pin ──┬──► KY-032 VCC
+ESP32 3V3 pin ──┬──► buzzer module VCC  ✅ (moved from 5 V; see section 6)
+                ├──► KY-032 VCC
                 ├──► 10 kΩ pull-up to PC817 pin 4
                 └──► level converter LV   ✅
 ```
@@ -290,11 +290,24 @@ Output goes LOW when it sees a pad (`IR_DETECTED_IS_LOW = true`). Powered from
 3V3 so its output can never exceed 3.3 V. Console command `i` shows the live
 reading.
 
-**Passive buzzer**
+**Passive buzzer module** (9012 PNP driver, "low level trigger")
 
 ```
-buzzer VCC ── 5 V rail    buzzer GND ── common GND    buzzer S ── GPIO 25
+buzzer VCC ── ESP32 3V3   buzzer GND ── common GND    buzzer I/O ── GPIO 25
 ```
+
+**Why 3V3, not 5 V.** The module's 9012 is a PNP transistor: the coil is on
+while the input is LOW. The firmware holds GPIO 25 **HIGH** between beeps so
+the coil carries no current (it used to sit LOW, silent but drawing steady
+current through the coil, and the module ran warm). A HIGH only turns the PNP
+fully off when the module's VCC is the same 3.3 V: from a 5 V VCC, 3.3 V on
+the input still leaves ~1.7 V across emitter and base, and the transistor
+stays partly on. It is the same reason a 3.3 V pin cannot release a 5 V
+active-LOW relay (`LESSONS_LEARNED.md` 1.4). The module is rated 3.3-5 V; at
+3.3 V it is a little quieter.
+
+**Check:** with the machine idle, the module should be cold to the touch, and
+GPIO 25 should read about 3.3 V to GND.
 
 ---
 

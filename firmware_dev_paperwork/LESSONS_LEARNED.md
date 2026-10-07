@@ -98,6 +98,16 @@ perfectly from 3.3 V, and that was taken as proof the 3.3 V theory was wrong.
 It wasn't proof. They're different circuits. A working active-HIGH relay
 tells you nothing about an active-LOW one.
 
+**It happened again with the buzzer (2026-10-08).** The buzzer module is
+"low level trigger" too: a 9012 PNP that runs the coil while its input is LOW.
+The firmware silenced it with 0% PWM, which is a steady LOW, so the coil
+carried current between every beep: silent, because a passive buzzer needs
+an alternating signal to sound, but warm. Holding the pin HIGH fixes it only
+if the module runs from 3.3 V, for the same reason as the relay. The builder
+had already swapped the buzzer for another, thinking it faulty, and was about
+to buy a new one. **When a part misbehaves, check what the circuit is doing
+to it before replacing it:** a new buzzer would have run just as warm.
+
 **Lesson.** With a 3.3 V microcontroller, **buy active-HIGH relay modules.**
 If you're stuck with an active-LOW one, drive it through an NPN transistor.
 And when evidence is offered against a theory, check the evidence applies to
