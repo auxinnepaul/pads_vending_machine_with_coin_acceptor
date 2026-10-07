@@ -594,6 +594,29 @@ is only set in `init()` and a later screen update depends on it.
 - **Measure volts, not ohms, in a powered circuit.** A fitted 100 kΩ read
   33 kΩ across its legs because the meter also measured the circuit around it.
 
+### 3.11 A flag that disagrees with the hardware stops everything that reads it
+
+**What happened.** The screen sat lit and frozen for over ten minutes. The
+firmware kept a flag, `backlightOn`, and a screen rebuild switched the real
+backlight on without updating it. With the light on and the flag saying
+"asleep", the rotation (which only ran when awake) and the sleep timer (which
+only puts an awake screen to sleep) both stopped, permanently.
+
+**How it was found.** Before changing anything: `s` was sent without
+resetting the board, to prove the loop was alive; the fault counter pointed at
+an earlier sensor test; and the bug was then **reproduced on purpose** on the
+old firmware in three steps before the fix was flashed.
+
+**Lessons.**
+- **Every write to a piece of hardware must go through its flag**, or the two
+  drift apart and everything that trusts the flag goes wrong.
+- **Reproduce before you fix.** A plausible cause is a guess; a three-step
+  reproduction is proof, and the same three steps become the test.
+- **Don't destroy the evidence.** Opening a serial monitor resets the board;
+  a typed command wakes the screen. Look first, in the least disturbing way.
+- **Guard against the failure you can't see coming.** A watchdog costs nothing
+  and turns an unexplained hang into a restart with a reason in the log.
+
 ---
 
 ## Part 4 — How we worked

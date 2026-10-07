@@ -372,7 +372,18 @@ whatever corrupted the screen while nobody was watching is gone before the
 first person sees it.
 
 Only plain idle sleeps. `OUT OF ORDER` and `SORRY - NO PADS` stay lit — that
-message is the whole reason the screen is there.
+message is the whole reason the screen is there. **Entering a fault or out of
+stock wakes the screen** (2026-10-08), so a machine that fails while asleep
+still shows it. The retry button and any typed command also wake it.
+
+**The idle text keeps rotating in the dark** (2026-10-08). It is readable
+without the backlight, and stopping the rotation with the light froze the
+screen mid-sentence.
+
+**The light always follows `backlightOn`.** A rebuild used to switch it on
+unconditionally, so a fault while asleep left the screen lit with the flag
+still saying asleep, and both the rotation and the sleep timer stopped for
+good. Every path that touches the backlight now goes by the flag.
 
 ---
 

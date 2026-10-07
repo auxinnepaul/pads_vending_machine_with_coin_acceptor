@@ -170,6 +170,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <Preferences.h>
 
 // The service phone number is kept out of git. It lives in service_contact.h
@@ -1153,6 +1154,8 @@ bool lcdNeedsReinit = false;
 uint32_t lcdRefreshMs = 0;    // next scheduled rebuild, see LCD_REFRESH_MS
 uint32_t lcdProbeMs = 0;      // next look for a screen missed at boot
 bool backlightOn = true;      // false = asleep, see BACKLIGHT_TIMEOUT_MS
+char lcdTopLine[17] = "";     // what say() last put on line 1
+bool loopWdtOn = false;       // the loop watchdog is armed (end of setup)
 uint32_t lastActivityMs = 0;  // last coin pulse or console command
 uint32_t lastPulseTotal = 0;  // to spot a pulse the moment it arrives
 
@@ -1884,6 +1887,28 @@ void buzzerService()
   buzzerSilence();
 }
 
+// THE LOOP WATCHDOG.
+//
+//  If loop() ever stops coming round (a hang, a lock-up, an endless wait),
+//  the coin interrupt keeps counting but nothing banks the coins: money in the
+//  box, nothing credited, nothing vended, for as long as the hang lasts. The
+//  ESP32's task watchdog restarts the chip instead. enableLoopWDT() at the end
+//  of setup() signs loop() up; the core checks in after every pass; and if a
+//  pass takes longer than CONFIG_ESP_TASK_WDT_TIMEOUT_S (5 s in this core,
+//  with panic-and-reset enabled), the chip resets. The next boot reports
+//  "task watchdog". Through the restart the slot is shut (NC relay, pull-down)
+//  and any banked credit comes back from flash.
+//
+//  Anything that waits ON PURPOSE for longer than that (the soak, the coin
+//  probe, a long motor run, paged one-shot messages) must call
+//  feedWatchdog() inside its wait. Console  H  hangs the loop deliberately to
+//  prove the watchdog works.
+void feedWatchdog()
+{
+  if (loopWdtOn)
+    esp_task_wdt_reset();
+}
+
 // A delay that still lets the buzzer stop on time. Use this, never delay(),
 // anywhere a note might still be sounding.
 void holdFor(uint32_t ms)
@@ -1892,6 +1917,7 @@ void holdFor(uint32_t ms)
   while (millis() - t0 < ms)
   {
     buzzerService();
+    feedWatchdog();
     delay(1);
   }
   buzzerService();
@@ -1922,7 +1948,9 @@ bool i2cPresent(uint8_t addr)
 //  The full lcd.init() is still used once, at boot, where the wait is real.
 void lcdRawNibble(uint8_t nibbleHigh)
 {
-  uint8_t b = (nibbleHigh & 0xF0) | LCD_BACKLIGHT; // RS=0 RW=0: a command
+  // RS=0 RW=0: a command. The backlight bit follows backlightOn, so a re-sync
+  // in the dark does not flash the light.
+  uint8_t b = (nibbleHigh & 0xF0) | (backlightOn ? LCD_BACKLIGHT : LCD_NOBACKLIGHT);
   Wire.beginTransmission(LCD_I2C_ADDR);
   Wire.write(b | 0x04); // E high
   Wire.endTransmission();
@@ -1960,13 +1988,21 @@ void say(const char *l1, const char *l2 = "")
   {
     lcdNeedsReinit = false;
     lcdResync(); // ~15 ms; NOT lcd.init(), which blocks for over a second
-    lcd.backlight();
+    // Restore the light to what it should be, not always ON: a rebuild while
+    // the backlight is asleep used to light it again and leave backlightOn
+    // false, so the sleep timer never fired again and it stayed lit.
+    if (backlightOn)
+      lcd.backlight();
+    else
+      lcd.noBacklight();
   }
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print(l1);
   lcd.setCursor(0, 1);
   lcd.print(l2);
+  strncpy(lcdTopLine, l1, sizeof(lcdTopLine) - 1);
+  lcdTopLine[sizeof(lcdTopLine) - 1] = 0;
 }
 
 // Rewrite line 2 only, without clearing the screen first.
@@ -2073,11 +2109,17 @@ const char *callLine()
   return buf;
 }
 
+// When the top line is already on screen, only line 2 is rewritten: no
+// clear, half the I2C traffic, and no blink every two seconds. A pending
+// rebuild (lcdNeedsReinit) still repaints both lines.
 void sayPaged(const char *l1, const char *l2, uint8_t &page)
 {
   char buf[17];
   uint8_t pages = lcdPage(l2, page, buf, sizeof(buf));
-  say(l1, buf);
+  if (!lcdNeedsReinit && strcmp(l1, lcdTopLine) == 0)
+    sayLine2(buf);
+  else
+    say(l1, buf);
   page = (uint8_t)((page + 1) % pages);
 }
 
@@ -2450,6 +2492,9 @@ void enterFault(const char *line2)
   faultRotateMs = 0; // force an immediate repaint
   beep(TONE_FAULT_HZ, TONE_FAULT_MS);
   state = ST_FAULT;
+  // Light the screen: "OUT OF ORDER / CALL THE NUMBER ABOVE" must be readable,
+  // and the backlight only sleeps in IDLE, so it stays lit until it is fixed.
+  wakeDisplay();
   LOGLN();
   LOG(F("*** FAULT: "));
   LOGLN(line2);
@@ -2569,6 +2614,7 @@ void enterEmpty()
   orderIndex = 0;
   bannerUp = false;
   state = ST_EMPTY;
+  wakeDisplay(); // "SORRY - NO PADS" must be readable, as for a fault
   emptyRotateMs = 0; // force an immediate repaint
   emptyMsgIdx = 0;
   beep(TONE_REJECT_HZ, TONE_REJECT_MS);
@@ -3116,6 +3162,7 @@ bool selfTest(bool verbose)
     while (!i2cPresent(LCD_I2C_ADDR) && millis() - w0 < LCD_BOOT_WAIT_MS)
     {
       buzzerService();
+      feedWatchdog();
       delay(50);
     }
     uint32_t waited = millis() - w0;
@@ -3147,6 +3194,7 @@ bool selfTest(bool verbose)
   {
     padSeen();
     buzzerService();
+    feedWatchdog();
     delay(1); // yield, same as everywhere else that waits on the beam
   }
   LOG(F("  GPIO "));
@@ -3410,6 +3458,7 @@ void printHelp()
   LOGLN(F("  l        LCD test pattern"));
   LOGLN(F("  b        buzzer test"));
   LOGLN(F("  n        click the inhibit relay 3x — does it actually move?"));
+  LOGLN(F("  H        hang the loop on purpose: the watchdog must restart it"));
   LOGLN(F("  P<s>     record the raw coin waveform on GPIO 18 for one coin,"));
   LOGLN(F("           next to what the interrupt counted. P or P30"));
   LOGLN();
@@ -3597,6 +3646,7 @@ void runMotorFor(uint32_t ms)
       LOGLN(F(" ms"));
     }
     buzzerService();
+    feedWatchdog();
     delay(1); // this can run for ten seconds; give the watchdog its turn
   }
   motorOff();
@@ -3682,6 +3732,7 @@ void soakTest(uint16_t cycles)
         break;
       }
       buzzerService();
+      feedWatchdog();
       delay(1);
     }
     uint32_t took = millis() - start;
@@ -3816,6 +3867,7 @@ bool chuteClear()
   {
     padSeen();
     buzzerService();
+    feedWatchdog();
     delay(1); // 1 ms is well inside IR_DEBOUNCE_MS, so nothing is missed
   }
   return !irStable;
@@ -3908,6 +3960,7 @@ void coinProbe(long waitS)
       rule();
       return;
     }
+    feedWatchdog();
     delayMicroseconds(20);
   }
 
@@ -3937,6 +3990,7 @@ void coinProbe(long waitS)
       break;
     if ((now - start) >= 8000000UL || n >= PROBE_MAX_EDGES)
       break;
+    feedWatchdog();
     delayMicroseconds(20);
   }
   uint32_t isrCounted = isrTotal - isrBefore;
@@ -4078,6 +4132,27 @@ void handleCommand(char *s)
 
   case 'P':
     coinProbe(n);
+    break;
+
+  case 'H':
+    // Prove the watchdog: hang loop() on purpose, with no check-in.
+    if (vendInFlight())
+    {
+      LOGLN(F("Busy. Wait for IDLE."));
+      break;
+    }
+    if (!loopWdtOn)
+    {
+      LOGLN(F("The watchdog is not armed. Not hanging."));
+      break;
+    }
+    LOGLN(F("Hanging loop() on purpose. The watchdog should restart the"));
+    LOGLN(F("board within about 5 s; the next boot reports 'task watchdog'."));
+    Serial.flush();
+    while (true)
+    {
+      // deliberately nothing: no feed, no yield
+    }
     break;
 
   case 'i':
@@ -4419,6 +4494,8 @@ void setup()
     LOGLN(F("The coin input is left DETACHED, so it cannot bank money."));
     LOGLN(F("Fix CONFIG and reflash. The console stays alive."));
     state = ST_FAULT;
+    enableLoopWDT(); // a halted machine still runs loop(): guard it too
+    loopWdtOn = true;
     return; // no attachInterrupt: coins cannot be counted in this condition
   }
 
@@ -4492,6 +4569,10 @@ void setup()
   }
   rule();
   logOn = logEvents; // whatever the boot setting was, run at the field level
+
+  // Armed last, so setup's own waits cannot trip it. See THE LOOP WATCHDOG.
+  enableLoopWDT();
+  loopWdtOn = true;
 }
 
 // ===========================================================================
@@ -5139,7 +5220,11 @@ void loop()
   }
 
   // ---- Cycle the idle prompt so the whole of it gets read ----
-  if (state == ST_IDLE && backlightOn && lcdOk && !bannerUp &&
+  //  It keeps cycling while the backlight is asleep. The text is readable in
+  //  the dark, and this used to stop with the backlight, freezing the screen
+  //  mid-sentence ("PAD = KSH 20" / "THIS MACHINE") until somebody came by.
+  //  A repaint is ~50 ms every two seconds.
+  if (state == ST_IDLE && lcdOk && !bannerUp &&
       reached(now, idleRotateMs) && (credit == 0 || holdForCollection))
   {
     idleRotateMs = now + FAULT_ROTATE_MS;

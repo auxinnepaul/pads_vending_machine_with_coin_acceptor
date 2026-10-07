@@ -93,6 +93,52 @@ The number is deliberately not in git.
 
 ---
 
+## 2026-10-08 (night) — Lit, frozen screen; a loop watchdog
+
+**Status: ✅ verified on hardware.**
+
+**Reported by the builder:** the screen sat lit on `PAD = KSH 20` /
+`THIS MACHINE` for over ten minutes, not rotating and not going dark.
+
+**Investigated before changing anything.** `s` was sent with DTR/RTS held so
+the board did not reset: the loop was alive (no hang), `faults : 1`. A typed
+command wakes the display, which corrected the state; two minutes later the
+backlight slept normally, which a correctly-tracked lit screen would have done
+long before. **Reproduced on the old firmware:** idle until the backlight
+slept, sensor VCC off (CHECK SENSOR), back on (recovered): lit and frozen
+within seconds.
+
+**Cause.** A rebuild in `say()` (set pending by the relay moving when the
+slot shut) called `lcd.backlight()` unconditionally, lighting the screen while
+`backlightOn` said asleep. The idle rotation and the sleep timer both require
+`backlightOn`, so both stopped: lit, frozen, never sleeping. Separately, the
+idle rotation stopped whenever the backlight slept, freezing mid-sentence in
+the dark.
+
+**Fixes.**
+- The rebuild restores the backlight to what `backlightOn` says, and the
+  raw re-sync bytes carry the matching backlight bit (no flash in the dark).
+- The idle message keeps rotating while the backlight sleeps.
+- A fault or out-of-stock wakes the screen, so `CALL THE NUMBER ABOVE` and
+  `SORRY - NO PADS` are readable.
+- `sayPaged()` rewrites only line 2 when line 1 is unchanged (the builder's
+  suggestion): no clear, half the I²C traffic, no blink.
+- **Loop watchdog** (the builder asked to guard against a real hang, where
+  the coin interrupt would count coins that nothing banks): `enableLoopWDT()`
+  at the end of setup, with the core's 5 s timeout and panic-and-reset.
+  Deliberate waits call `feedWatchdog()`. Console `H` hangs the loop on
+  purpose to test it.
+
+**Results ✅**
+- `H`: `task_wdt: Task watchdog got triggered ... Aborting`, restart, next
+  boot `last reset : task watchdog` and `The firmware crashed last run`,
+  `SELF-TEST: PASS`, back in service, all within ~5 s.
+- Idle past 2 min: backlight off, text keeps moving; top line no longer blinks.
+- Sensor VCC off: CHECK SENSOR and the screen lights. Back on: recovers.
+  Two minutes later: dark, text still moving. No freeze.
+
+---
+
 ## 2026-10-08 (evening) — Blank screen on some cold power-ups; pull-down fitted
 
 **Status: ✅ verified on hardware** (results at the end of this section).
