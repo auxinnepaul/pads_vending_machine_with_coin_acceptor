@@ -562,9 +562,37 @@ vend and just before one, so at rest the machine never looked.
 - **Read your safety inputs all the time**, not only when you are about to
   need them. One `digitalRead` per loop pass costs nothing.
 - **Give an input a defined state when its wire comes off.** A floating pin
-  reads whatever it likes; a 100 kΩ pull-down makes an unplugged sensor read
+  reads whatever it likes; a pull-down (1 MΩ here) makes an unplugged sensor read
   "blocked", which the machine treats safely. Size it against the sensor's
   own pull-up, or the "clear" level falls toward the logic threshold.
+
+### 3.10 A device looked for once at boot can be missing all day
+
+**What happened.** On some cold power-ups the screen stayed blank all
+session, while coins, vends and everything else worked. The firmware looked
+for the LCD once, in the self-test. At power-on the 5 V rail ramps as its
+1000 µF charges, and the ESP32 could ask before the LCD backpack had enough
+voltage to answer. One missed answer meant "no screen" until the next reboot.
+It never happened on an EN reset, because the rails were already up.
+
+**The fix.** Wait up to two seconds for the screen at boot; if it is still
+missing, look again every five seconds and bring it up the moment it answers;
+and re-initialise it once more after the boot screen, when the rails have
+settled. The library is now always initialised at boot, because its line count
+is only set in `init()` and a later screen update depends on it.
+
+**Lessons.**
+- **Anything optional should be looked for again, not once.** A one-time check
+  at boot turns a slow power-up into a whole-day fault.
+- **Cold power-up and reset are different tests.** Rails that ramp behave
+  differently from rails that are already up; test both.
+- **Size a pull resistor against the measured opposing pull-up, not a typical
+  one.** 100 kΩ was chosen against an assumed ~10 kΩ sensor pull-up; the
+  powered reading was 2.01 V, below the ESP32's guaranteed HIGH: this
+  sensor's output is ~3.02 V behind ~50 kΩ. 1 MΩ fits it. The meter check
+  caught it.
+- **Measure volts, not ohms, in a powered circuit.** A fitted 100 kΩ read
+  33 kΩ across its legs because the meter also measured the circuit around it.
 
 ---
 

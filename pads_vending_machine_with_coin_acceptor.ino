@@ -851,7 +851,7 @@ const uint32_t INHIBIT_SETTLE_MS = 600;
 //  WHAT        If the beam reads BLOCKED for this long while the machine sits
 //              idle, it goes to FAULT "CHECK SENSOR" and shuts the slot, so
 //              nobody pays into a machine that cannot see a pad drop. That is
-//              what an unplugged sensor looks like (with the 100 k pull-down
+//              what an unplugged sensor looks like (with the 1 M pull-down
 //              on GPIO 27, see WIRING.md), as well as a pad stuck in the chute.
 //              It used to be a console warning only, and the beam was not
 //              even read while idle, so an unplugged sensor went unnoticed.
@@ -995,6 +995,22 @@ const bool HALT_ON_SELFTEST_FAIL = true;
 //  Set to 0 to disable.
 const uint32_t LCD_REFRESH_MS = 60000;
 
+// ---------------------------------------------------------------------------
+//  LCD_BOOT_WAIT_MS / LCD_REPROBE_MS — finding a screen that is slow to wake
+// ---------------------------------------------------------------------------
+//  WHAT        At power-up the 5 V rail ramps as its 1000 uF charges, and the
+//              ESP32 can run its self-test before the LCD backpack is powered
+//              enough to answer on I2C. The screen used to be looked for once:
+//              miss it and the machine ran the whole session with a blank
+//              screen while everything else worked (seen on the bench,
+//              2026-10-08, on cold power-ups but never on an EN reset).
+//              Now the self-test waits up to LCD_BOOT_WAIT_MS for it, and if
+//              it is still missing, loop() looks again every LCD_REPROBE_MS and
+//              brings the screen up the moment it answers.
+//  CONSOLE     none — needs a reflash
+const uint32_t LCD_BOOT_WAIT_MS = 2000;
+const uint32_t LCD_REPROBE_MS = 5000;
+
 // How long the machine sits untouched before the backlight goes out.
 //
 //  The backlight is nearly all of what this display consumes — roughly 20 mA
@@ -1135,6 +1151,7 @@ bool lcdOk = false; // false = run headless, console only
 //  See README, "Funny symbols on the screen".
 bool lcdNeedsReinit = false;
 uint32_t lcdRefreshMs = 0;    // next scheduled rebuild, see LCD_REFRESH_MS
+uint32_t lcdProbeMs = 0;      // next look for a screen missed at boot
 bool backlightOn = true;      // false = asleep, see BACKLIGHT_TIMEOUT_MS
 uint32_t lastActivityMs = 0;  // last coin pulse or console command
 uint32_t lastPulseTotal = 0;  // to spot a pulse the moment it arrives
@@ -3092,6 +3109,23 @@ bool selfTest(bool verbose)
 
   // --- 4. I2C and the screen ---
   LOGLN(F("[4] SCREEN"));
+  {
+    // Give a backpack that is still powering up time to answer
+    // (see LCD_BOOT_WAIT_MS).
+    uint32_t w0 = millis();
+    while (!i2cPresent(LCD_I2C_ADDR) && millis() - w0 < LCD_BOOT_WAIT_MS)
+    {
+      buzzerService();
+      delay(50);
+    }
+    uint32_t waited = millis() - w0;
+    if (waited >= 50 && waited < LCD_BOOT_WAIT_MS)
+    {
+      LOG(F("  LCD answered after "));
+      LOG(waited);
+      LOGLN(F(" ms (still powering up)."));
+    }
+  }
   i2cScan();
   lcdOk = i2cPresent(LCD_I2C_ADDR);
   LOG(F("  LCD at 0x"));
@@ -3100,7 +3134,8 @@ bool selfTest(bool verbose)
   if (!lcdOk)
   {
     LOGLN(F("  Running headless. The machine still vends, but the"));
-    LOGLN(F("  customer is told nothing. Fix before any demo."));
+    LOGLN(F("  customer is told nothing. It keeps looking every 5 s and"));
+    LOGLN(F("  brings the screen up the moment it answers."));
     LOGLN(F("  Try the other address the scan found, in SECTION 4."));
   }
 
@@ -4353,11 +4388,14 @@ void setup()
     selfTestPassed = selfTest(true);
   }
 
+  // Initialise the library even when no screen answered. Its init() is the
+  // only thing that sets the line count, and setCursor() reads it: on a
+  // never-initialised object, line 2 indexes past the end of an array. So a
+  // screen found later by the re-probe in loop() can be driven straight away.
+  // With no screen attached the writes simply go unanswered.
+  lcd.init();
   if (lcdOk)
-  {
-    lcd.init();
     lcd.backlight();
-  }
 
   if (!selfTestPassed && HALT_ON_SELFTEST_FAIL)
   {
@@ -4386,6 +4424,11 @@ void setup()
 
   say("PAD DISPENSER", "FIRMWARE v" FW_VERSION);
   holdFor(1200);
+  // Initialise the display once more, now the rails have had over a second
+  // to settle. If the controller took its first setup while the 5 V rail was
+  // still climbing it can sit blank although it answers on I2C; the next
+  // say() re-syncs it (lcdResync, ~15 ms).
+  lcdNeedsReinit = true;
 
   // ---- Restore a balance left on the meter by a power cut ----
   //
@@ -4595,7 +4638,7 @@ void loop()
   }
 
   // ---- A beam that stays blocked at rest: shut the slot ----
-  //  Something is in the chute, or the sensor is unplugged (with the 100 k
+  //  Something is in the chute, or the sensor is unplugged (with the 1 M
   //  pull-down an unplugged sensor reads BLOCKED). Either way a vend could
   //  not see its pad drop, so stop taking money now rather than after a
   //  customer has paid. It clears itself once the beam reads clear again.
@@ -5126,6 +5169,23 @@ void loop()
     lcdRefreshMs = now + LCD_REFRESH_MS;
     lcdNeedsReinit = true;
     repaintForState();
+  }
+
+  // ---- A screen missed at boot is looked for until it answers ----
+  //  Not mid-vend: bringing it up paints the screen, and while the coil turns
+  //  the beam comes first.
+  if (!lcdOk && !vendInFlight() && reached(now, lcdProbeMs))
+  {
+    lcdProbeMs = now + LCD_REPROBE_MS;
+    if (i2cPresent(LCD_I2C_ADDR))
+    {
+      lcdOk = true;
+      backlightOn = true;
+      lastActivityMs = now;
+      lcdNeedsReinit = true; // say() runs the full HD44780 init sequence
+      LOGLN(F("LCD answered after boot. Screen is up."));
+      repaintForState();
+    }
   }
 
   // ---- A store that refused at boot is retried until it opens ----

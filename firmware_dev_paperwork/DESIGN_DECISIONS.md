@@ -423,7 +423,7 @@ machine goes to `FAULT` `CHECK SENSOR` and the slot shuts. That fault, the
 **clear themselves** once the beam reads clear for `BEAM_CLEAR_RECOVER_MS`
 (3 s): a boot halt re-runs the whole self-test first.
 
-**Why.** An unplugged sensor (with the 100 kΩ pull-down) or a pad stuck in the
+**Why.** An unplugged sensor (with the 1 MΩ pull-down) or a pad stuck in the
 chute both read BLOCKED, and a machine that cannot see a pad drop must not
 take money. Before, the beam was only read during a vend, so unplugging the
 sensor on a running machine went unnoticed, and fixing it at boot needed the

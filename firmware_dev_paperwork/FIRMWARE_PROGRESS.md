@@ -81,7 +81,7 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 
 **At commissioning:** go through "Questions for Rebecca at commissioning" at the top of `IMPROVEMENTS_BACKLOG.md`, then set the firmware to her answers.
 
-0. **100 kΩ pull-down on GPIO 27: running without it for now, by the builder's decision (2026-10-08). Fit it before a site install.** Everything works with the sensor connected; without it, an unplugged sensor is caught only if GPIO 27 floats LOW (it did on this board). The one money risk is a floating pin flickering during a vend and faking a pad drop.
+0. **Buy and fit a 1 MΩ pull-down on GPIO 27** (100 kΩ was tried and removed: 2.01 V clear). Check ≥ 2.8 V clear, ~0 V unplugged. Everything works with the sensor connected; without it, an unplugged sensor is caught only if GPIO 27 floats LOW (it did on this board). The one money risk is a floating pin flickering during a vend and faking a pad drop.
 1. **Build the chute and load the coil with real pads.**
 2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
 3. **The 50-cycle soak** — the number the client asked for.
@@ -91,6 +91,68 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 **Flashing on another computer:** create `service_contact.h` from
 `service_contact.example.h` first, or the fault screen shows the placeholder.
 The number is deliberately not in git.
+
+---
+
+## 2026-10-08 (evening) — Blank screen on some cold power-ups; pull-down fitted
+
+**Status: ✅ verified on hardware** (results at the end of this section).
+
+**Reported by the builder:** sometimes, on plugging the power in, the screen
+showed nothing all session while coins, vends and everything else worked.
+
+**Cause.** The LCD was looked for once, in self-test [4]. Missed then, `lcdOk`
+stayed false and every screen update returned at once for the whole session,
+which is why even a vend didn't bring it back. On a cold power-up the 5 V rail
+ramps as its 1000 µF charges, and the ESP32 can run the self-test before the
+backpack answers on I²C. An EN reset always finds it (rails already up).
+Not reproduced on demand; the code path explains the symptom exactly.
+
+**Fixes.**
+- Self-test [4] waits up to `LCD_BOOT_WAIT_MS` (2 s) for the LCD to answer.
+- If it is still missing, `loop()` looks again every `LCD_REPROBE_MS` (5 s),
+  outside a vend, and brings the screen up the moment it answers.
+- The library is always initialised at boot: `lcd.init()` is the only place
+  that sets its line count, and `setCursor()` indexes an array with it.
+- The display is re-initialised once more after the boot screen, when the
+  rails have settled, in case its controller took its first setup on a
+  still-rising rail.
+
+**Also:** the 100 kΩ pull-down on GPIO 27 is fitted. Measured across its legs
+it read 33 kΩ: that is the meter measuring the parallel path through the
+sensor and the unpowered board, not a wrong resistor. The powered check
+(GPIO 27 ≈ 3.0 V with the beam clear, 0 V with the sensor unplugged) is still
+to record.
+
+**Bench test plan:** unplug and replug the 12 V power several times, with the
+USB unplugged (so the ESP32 starts from the ramping rail); the screen must
+come up every time. If one boot does miss it, the console should say
+`LCD answered after boot. Screen is up.` within about 5 s.
+
+**Results ✅**
+- **6 of 6 cold power-ups** (12 V replugged, USB unplugged): the screen came
+  up every time. Each boot: buzzer chirp (self-test [9]), backlight off then
+  on (`lcd.init()`), text.
+- **2 of the 6 took an extra 2–4 s** before the backlight cycled. That is
+  the new wait for the LCD to answer: on those two boots the backpack was not
+  ready when the self-test first asked, which is exactly the case that used
+  to leave the screen blank all session. (No console on those boots, so the
+  `LCD answered after ... ms` line was not seen; the timing fits.)
+- **Pull-down:** GPIO 27 reads **0.00 V** with the sensor's VCC disconnected,
+  and the self-test halts on CHUTE BLOCKED, as intended.
+- **❌ But with the sensor connected and the beam clear it reads 2.01 V**,
+  below the ESP32's guaranteed HIGH (~2.5 V). It reads "clear" only because
+  this chip happens to switch lower. A dip during a vend could read as a pad
+  falling. 100 kΩ is too strong for this sensor. **Removed;** with no
+  pull-down GPIO 27 reads **3.02 V** with the beam clear, which puts the
+  sensor's output at ~3.02 V behind ~50 kΩ (not the ~10 kΩ assumed).
+  **Fit 1 MΩ when one is bought** (~2.88 V clear; check ≥ 2.8 V). Until
+  then an unplugged sensor floats, which on this board has drifted LOW.
+  WIRING.md section 6 updated.
+- With no pull-down and the sensor's **VCC** removed, GPIO 27 reads
+  **0.000 V** and the machine goes out of order: the module's own pull-up ties
+  the pin to its dead VCC. The 1 MΩ is therefore for a lost **OUT** wire (or
+  the sensor unplugged, or likely a lost GND), where the pin truly floats.
 
 ---
 

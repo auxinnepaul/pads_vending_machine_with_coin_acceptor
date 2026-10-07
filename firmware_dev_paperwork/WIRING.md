@@ -40,7 +40,7 @@ The sketch that goes with this wiring is the one in this repo,
 | **18** | PC817 **pin 4** (collector) | `INPUT_PULLUP`, interrupt on `FALLING`, 75 ms debounce | 10 kΩ from pin 4 to **3V3** | ✅ all four coins decode exactly |
 | **19** | Inhibit relay (relay 2) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot; self-test correct. `n1`/`n0` not yet run |
 | **26** | Motor relay (relay 1) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot |
-| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | **100 kΩ pull-down to GND** ⏳ | ✅ self-test: chute clear |
+| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | **1 MΩ pull-down to GND** ⏳ (100 kΩ tried and removed: too strong) | ✅ 3.02 V with the beam clear, no pull-down |
 | **25** | Passive buzzer module `I/O` | Tone output; **held HIGH when silent** | Module VCC from **3V3**, not 5 V | ✅ chirps; module cold at idle |
 | **21** | Level converter **LV1**, then LCD SDA | I²C SDA | Level converter (section 9) | ✅ LCD found at 0x27 |
 | **22** | Level converter **LV2**, then LCD SCL | I²C SCL | Level converter (section 9) | ✅ |
@@ -266,10 +266,10 @@ relay 1 NO ──────────────┬────────
 KY-032 VCC ── ESP32 3V3
 KY-032 GND ── common GND
 KY-032 OUT ──┬── GPIO 27
-             └──[100 kΩ]── GND      ⏳ to fit
+             └──[1 MΩ]──── GND      ⏳ to fit (100 kΩ tried and removed 2026-10-08)
 ```
 
-**Why the 100 kΩ pull-down.** Without it, an unplugged sensor leaves GPIO 27
+**Why a pull-down.** Without it, an unplugged sensor leaves GPIO 27
 floating. It usually drifts LOW, which reads as "something in the beam", but
 not always; floating HIGH reads as "clear", and the machine would run with no
 sensor and fault every vend as JAMMED. With the pull-down, an unplugged sensor
@@ -277,14 +277,44 @@ sensor and fault every vend as JAMMED. With the pull-down, an unplugged sensor
 machine the beam reads blocked at rest for 5 s and the slot shuts with
 `CHECK SENSOR`. Plugging it back in clears the fault by itself after 3 s.
 
-**Why 100 kΩ and not less.** The KY-032's output has its own pull-up of about
-10 kΩ. The pull-down forms a divider with it when the beam is clear:
-100 kΩ gives about **3.0 V**; 47 kΩ, or the ESP32's internal ~45 kΩ, only
-about **2.7 V**, too close to the ESP32's 2.5 V threshold for HIGH.
+**Why 1 MΩ: measured, not assumed.** The pull-down forms a divider with the
+sensor's own output pull-up when the beam is clear, and the ESP32 only
+guarantees reading HIGH above about **2.5 V**. A ~10 kΩ pull-up was assumed,
+which made 100 kΩ look right (~3.0 V). **Measured on this KY-032:** with no
+pull-down the output sits at **3.02 V** with the beam clear; with 100 kΩ it
+fell to **2.01 V**. So its output is about 3.02 V behind roughly **50 kΩ**.
+Against that:
+
+| Pull-down | GPIO 27, beam clear | |
+|---|---|---|
+| none | 3.02 V (measured) | ✅ but an unplugged sensor floats |
+| 100 kΩ | 2.01 V (measured) | ❌ below the guaranteed HIGH: a dip could read as a pad falling |
+| 470 kΩ | ~2.73 V | marginal |
+| **1 MΩ** | **~2.88 V** | ✅ |
+| 2.2 MΩ | ~2.95 V | ✅ |
+
+**What the 1 MΩ actually covers** (measured with no pull-down): with the
+sensor's **VCC** disconnected, GPIO 27 still reads **0.000 V** and the machine
+goes out of order correctly, because the module's own ~50 kΩ pull-up now ties
+the pin to its unpowered VCC. So the pull-down is not needed for a lost VCC.
+It is needed for a lost **OUT** wire, or the whole sensor unplugged, where the
+pin really floats, and probably a lost GND (the module's output is then not
+driven at all). A broken signal wire is the likeliest connector failure in a
+machine with a motor in it.
+
+1 MΩ still holds an unplugged pin at 0 V: the pin's leakage is far too small
+to lift it. If a 1 MΩ is not to hand, remove the 100 kΩ rather than run with
+it; floating only matters when the sensor is unplugged.
 
 **Check after fitting:** sensor connected and the chute empty, meter on
-GPIO 27 to GND: **about 3.0 V, and at least 2.9 V**. Then unplug the sensor's
-OUT wire: it should read **0 V**.
+GPIO 27 to GND: **at least 2.8 V**. Then unplug the sensor (or its VCC): it
+should read **0 V**.
+
+**Measure volts with the power on, not ohms.** A resistance reading taken
+across the fitted resistor read 33 kΩ on the bench: the meter also measures
+the parallel path through the sensor's pull-up and the unpowered 3V3 rail
+(100 kΩ ∥ ~50 kΩ ≈ 33 kΩ). The resistor was fine. To check a resistor's value,
+read its bands (brown-black-yellow = 100 kΩ) or lift one leg.
 
 Output goes LOW when it sees a pad (`IR_DETECTED_IS_LOW = true`). Powered from
 3V3 so its output can never exceed 3.3 V. Console command `i` shows the live
@@ -454,7 +484,7 @@ it holds COM3. In order:
 | 100 nF at acceptor end | ⏳ optional |
 | Level converter + LCD | ✅ LCD at 0x27, idle screen showing |
 | LCD decoupling | ✅ 100 nF soldered at the backpack's VCC/GND; no bulk cap needed (~4 cm from the buck's 1000 µF + 100 nF) |
-| 100 kΩ pull-down on GPIO 27 | ⏳ so an unplugged IR sensor always reads BLOCKED |
+| Pull-down on GPIO 27 | ⏳ 100 kΩ tried 2026-10-08: 2.01 V with the beam clear (too low), removed; 3.02 V without. Fit 1 MΩ and check ≥ 2.8 V |
 
 The measurements and reasoning behind all of this are in
 `FIRMWARE_PROGRESS.md`, in the 2026-09-28 to 2026-09-30 sections.
