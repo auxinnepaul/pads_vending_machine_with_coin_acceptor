@@ -59,7 +59,6 @@ is **mechanical**: a chute, real pads, and the soak.
 | | Blocked on |
 |---|---|
 | **TVS on the 12 V block** | Not bought. P6KE15A, band to +12 V |
-| **100 µF + 100 nF at the relay module VCC** | Not fitted. Part of the physical fix for relay/stock-switch coupling |
 | **Real drop times** | No chute. Every timing so far is a finger at the IR sensor |
 | **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
@@ -85,7 +84,7 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 1. **Build the chute and load the coil with real pads.**
 2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
 3. **The 50-cycle soak** — the number the client asked for.
-4. Buy and fit the TVS; fit the relay-module decoupling. (LCD decoupling not needed: see the 2026-10-07 note.)
+4. Buy and fit the TVS. (Relay-module and LCD decoupling not needed: both are within a few cm of the buck's output caps, and the relay/stock-switch coupling is handled by the guard, verified.)
 5. Decide `k`/`l`/`L`.
 
 **Flashing on another computer:** create `service_contact.h` from

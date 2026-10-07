@@ -93,7 +93,8 @@ that block.
                                    │
                          5 V RAIL ─┼──► Schottky ──► ESP32 VIN
                                    ├──► relay module VCC (both relays)
-                                   │      + 100 µF 16 V + 100 nF   ⏳
+                                   │      (~1.3 cm from the buck: its output
+                                   │       caps serve the relays)
                                    ├──► level converter HV   ✅
                                    └──► LCD VCC               ✅
                                           (~4 cm from the buck: its output
@@ -118,7 +119,7 @@ ESP32 3V3 pin ──┬──► buzzer module VCC  ✅ (moved from 5 V; see sec
 | TVS P6KE15A ⏳ | 12 V block | Clamps spikes on the 12 V rail below the LM2596's 40 V input limit. A buck killed by a spike usually fails shorted, which puts 12 V on the 5 V rail |
 | 1000 µF + 100 nF | Buck output | The electrolytic holds the 5 V rail up through dips; the ceramic absorbs the fast switching edges the electrolytic is too slow for |
 | Schottky | Buck to VIN | Stops the buck and USB fighting when both are connected |
-| 100 µF + 100 nF ⏳ | Relay module VCC | Local supply for the coils; part of the fix for the relay disturbing the stock switch (section 7) |
+| (none needed) | Relay module VCC | The relays sit ~1.3 cm from the buck's 1000 µF + 100 nF, which serve as their local supply. A 100 nF across the module's VCC/GND is optional insurance |
 
 ---
 
@@ -357,12 +358,14 @@ selling pads it does not have.
 
 **Keep the stock switch wiring away from the relay wiring.** On the bench the
 inhibit relay switching made the stock line flicker between EMPTY and PRESENT
-several times a second, and that loop reset the board twice. The uncommitted
-firmware change (`INHIBIT_SETTLE_MS` and the flap detector) stops the firmware
-reacting to it, but the real fix is physical:
+several times a second, and that loop reset the board twice. The firmware
+guard (`INHIBIT_SETTLE_MS` and the flap detector, committed and verified)
+stops the firmware reacting to it: no stock-line change through 24 relay
+clicks and every vend since. Good wiring practice still applies:
 
 - route the stock switch pair separately from the relay and motor wires;
-- fit the 100 µF + 100 nF at the relay module VCC ⏳;
+- keep the relay modules close to the buck's output caps (they are, ~1.3 cm,
+  so no separate relay decoupling is needed);
 - make every ground meet at the one terminal block.
 
 ---
@@ -480,7 +483,7 @@ it holds COM3. In order:
 | New ESP32 | ✅ flashed, self-test PASS |
 | Coins through the PC817 | ✅ all four coins exact after the double-count fix; five vends |
 | TVS on 12 V block | ⏳ not bought |
-| 100 µF + 100 nF at relay module VCC | ⏳ |
+| Relay module decoupling | ✅ not needed: ~1.3 cm from the buck's output caps; the relay/stock-switch coupling is handled and verified |
 | 100 nF at acceptor end | ⏳ optional |
 | Level converter + LCD | ✅ LCD at 0x27, idle screen showing |
 | LCD decoupling | ✅ 100 nF soldered at the backpack's VCC/GND; no bulk cap needed (~4 cm from the buck's 1000 µF + 100 nF) |

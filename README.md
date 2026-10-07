@@ -378,7 +378,7 @@ Idle HIGH, pulse LOW: the same polarity the firmware already expects
 | 1000 µF | **25 V** or 35 V | 1 | Across the **12 V rail**, at the buck input | Absorbs the sag when the motor starts. This is the one that stops brownouts |
 | 1000 µF | **25 V** | 1 | At the **coin acceptor's** 12 V terminals | It fires a gate solenoid on every coin |
 | 470–1000 µF | **16 V** | 1 | At the **buck's 5 V output** | Holds the 5 V rail up through the dip |
-| 100 µF | **16 V** | 1–2 | At the **relay module VCC**, and at the **LCD backpack** if it is more than ~10 cm from the buck's output caps | These boards ship with almost no decoupling |
+| 100 µF | **16 V** | 0–2 | At the **relay module VCC** and the **LCD backpack**, only if either is more than ~10 cm from the buck's output caps | Close to the buck, its 1000 µF + 100 nF already serve them |
 
 **Voltage rating is not optional.** The rule of thumb is at least twice the
 working voltage: 25 V on a 12 V rail, 16 V on a 5 V rail. A 16 V part on the
