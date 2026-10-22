@@ -20,9 +20,10 @@ The sketch that goes with this wiring is the one in this repo,
 
 1. **The coin acceptor never connects straight to a GPIO.** COIN goes through
    the PC817 (section 3). Three boards were killed by spikes on that wire.
-2. **Switch the 12 V off before plugging or unplugging the acceptor**, until
-   the TVS is fitted (section 2). Doing it with power on is what produced the
-   24–36 V spikes.
+2. **Prefer to switch the 12 V off before plugging or unplugging the
+   acceptor.** The P6KE15CA TVS (section 2) now clamps the 24–36 V hot-plug
+   spikes, so this is good practice rather than mandatory; the PC817 already
+   keeps those spikes off the ESP32 regardless.
 3. **Set the buck to 5.0 V with a meter, with nothing on its output,** before
    any ESP32 is connected. Recheck it whenever the trimpot may have been
    touched.
@@ -40,7 +41,7 @@ The sketch that goes with this wiring is the one in this repo,
 | **18** | PC817 **pin 4** (collector) | `INPUT_PULLUP`, interrupt on `FALLING`, 75 ms debounce | 10 kΩ from pin 4 to **3V3** | ✅ all four coins decode exactly |
 | **19** | Inhibit relay (relay 2) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot; self-test correct. `n1`/`n0` not yet run |
 | **26** | Motor relay (relay 1) `IN` | Output, active HIGH | 10 kΩ **pull-down** to GND | ✅ no click through boot |
-| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | **1 MΩ pull-down to GND** ⏳ (100 kΩ tried and removed: too strong) | ✅ 3.02 V with the beam clear, no pull-down |
+| **27** | KY-032 IR sensor `OUT` | Input, LOW = pad seen | **1 MΩ pull-down to GND** ✅ (100 kΩ was too strong) | ✅ reads HIGH, chute clear in self-test |
 | **25** | Passive buzzer module `I/O` | Tone output; **held HIGH when silent** | Module VCC from **3V3**, not 5 V | ✅ chirps; module cold at idle |
 | **21** | Level converter **LV1**, then LCD SDA | I²C SDA | Level converter (section 9) | ✅ LCD found at 0x27 |
 | **22** | Level converter **LV2**, then LCD SCL | I²C SCL | Level converter (section 9) | ✅ |
@@ -78,7 +79,7 @@ that block.
                         12 V TERMINAL BLOCK
 12 V 4 A adaptor ──────┬───────────────────────────────────────────
                        │  1000 µF 25 V  ✅          (stripe to GND)
-                       │  P6KE15A TVS   ⏳ not bought (band to +12 V)
+                       │  P6KE15CA TVS  ✅ fitted (bidirectional, no band)
                        │
                        ├──► coin acceptor 12 V / GND
                        │      + 100 nF at the acceptor end   ⏳ optional
@@ -116,7 +117,7 @@ ESP32 3V3 pin ──┬──► buzzer module VCC  ✅ (moved from 5 V; see sec
 | Part | Where | Job |
 |---|---|---|
 | 1000 µF 25 V | 12 V block | Stops the rail sagging when the motor or solenoid starts, and soaks up spike energy |
-| TVS P6KE15A ⏳ | 12 V block | Clamps spikes on the 12 V rail below the LM2596's 40 V input limit. A buck killed by a spike usually fails shorted, which puts 12 V on the 5 V rail |
+| TVS P6KE15CA ✅ | 12 V block | Clamps spikes on the 12 V rail below the LM2596's 40 V input limit. A buck killed by a spike usually fails shorted, which puts 12 V on the 5 V rail |
 | 1000 µF + 100 nF | Buck output | The electrolytic holds the 5 V rail up through dips; the ceramic absorbs the fast switching edges the electrolytic is too slow for |
 | Schottky | Buck to VIN | Stops the buck and USB fighting when both are connected |
 | (none needed) | Relay module VCC | The relays sit ~1.3 cm from the buck's 1000 µF + 100 nF, which serve as their local supply. A 100 nF across the module's VCC/GND is optional insurance |
@@ -267,7 +268,7 @@ relay 1 NO ──────────────┬────────
 KY-032 VCC ── ESP32 3V3
 KY-032 GND ── common GND
 KY-032 OUT ──┬── GPIO 27
-             └──[1 MΩ]──── GND      ⏳ to fit (100 kΩ tried and removed 2026-10-08)
+             └──[1 MΩ]──── GND      ✅ fitted 2026-10-22 (100 kΩ removed, too strong)
 ```
 
 **Why a pull-down.** Without it, an unplugged sensor leaves GPIO 27
@@ -479,15 +480,17 @@ it holds COM3. In order:
 | Motor 47 nF + 1N5408, motor runs | ✅ |
 | PC817 coin line, metered | ✅ |
 | Pull-downs on GPIO 19 and 26 | ✅ fitted |
-| Active-HIGH inhibit relay on NC | ✅ holds through boot; `n1`/`n0` next |
+| Active-HIGH inhibit relay on NC | ✅ holds through boot; verified over many vends |
 | New ESP32 | ✅ flashed, self-test PASS |
 | Coins through the PC817 | ✅ all four coins exact after the double-count fix; five vends |
-| TVS on 12 V block | ⏳ not bought |
+| TVS on 12 V block | ✅ P6KE15CA fitted 2026-10-22 |
 | Relay module decoupling | ✅ not needed: ~1.3 cm from the buck's output caps; the relay/stock-switch coupling is handled and verified |
 | 100 nF at acceptor end | ⏳ optional |
 | Level converter + LCD | ✅ LCD at 0x27, idle screen showing |
+| Assembled in the enclosure | ✅ 2026-10-22; 6-day run, flat heap |
+| Coil feeds real pads | ⏳ 2 of 2 so far; full 25–50 pad soak pending |
 | LCD decoupling | ✅ 100 nF soldered at the backpack's VCC/GND; no bulk cap needed (~4 cm from the buck's 1000 µF + 100 nF) |
-| Pull-down on GPIO 27 | ⏳ 100 kΩ tried 2026-10-08: 2.01 V with the beam clear (too low), removed; 3.02 V without. Fit 1 MΩ and check ≥ 2.8 V |
+| Pull-down on GPIO 27 | ✅ 1 MΩ fitted 2026-10-22 (100 kΩ gave 2.01 V, too low; 3.02 V with none). Self-test reads chute clear |
 
 The measurements and reasoning behind all of this are in
 `FIRMWARE_PROGRESS.md`, in the 2026-09-28 to 2026-09-30 sections.

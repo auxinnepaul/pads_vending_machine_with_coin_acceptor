@@ -174,9 +174,9 @@ Out of scope for this build. Option D in the feasibility study.
 - **Per-state loop max.** `loop max` is one number for everything. Splitting
   it by state would show whether the 227 ms pass is before or during the
   coil's turn. Worth it only if the soak shows a missed drop.
-- **Fit the TVS (P6KE15A).** (Relay-module and LCD decoupling: not needed,
-  both are within a few cm of the buck's output caps.) Parts,
-  not code; see `WIRING.md` §2.
+- ~~**Fit the TVS**~~ ✅ P6KE15CA fitted 2026-10-22, and the 1 MΩ GPIO-27
+  pull-down. (Relay-module and LCD decoupling: not needed, both within a few
+  cm of the buck's output caps.)
 
 - **`CLEAR_BTN_HOLD_MS`** is 1 second. Watch a real customer use it before
   deciding whether that is right — too short invites accidents, too long and

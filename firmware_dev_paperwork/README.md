@@ -50,13 +50,13 @@ none of them make sense without it.
 | | |
 |---|---|
 | Firmware | Complete, compiles clean on ESP32 core 2.0.11 |
-| Size | ~336 KB flash (25%), 24 KB RAM |
+| Size | ~339 KB flash (25%), 24 KB RAM |
 | Coin handling | ✅ all four coins exact through the PC817 (1 / 5 / 10 / 20 pulses), accumulation, change, KSh 40 double vend |
 | Coin-line protection | ✅ PC817 built and metered: no spike reaches the GPIO side. Three boards were lost before it |
 | Power-cut recovery | ✅ verified on hardware |
 | Jam retry / customer button | ✅ verified on hardware |
-| Drop times | ⏳ **not measured** — no chute yet, every timing so far is a finger at the sensor |
-| Pads feeding off the coil | ⏳ **untested** — the number one risk in the whole project |
+| Drop times | ⏳ first real drops 1038 & 1950 ms (2 pads); full 25–50 pad soak pending to set `DISPENSE_TIMEOUT_MS` (still 7000 ms) |
+| Pads feeding off the coil | ⏳ **2 of 2 fed cleanly** (first real pads, 2026-10-22); full soak with a stack of pads still needed to prove it |
 | LCD | ✅ working through an I²C level converter, found at 0x27 (`WIRING.md` §9) |
 | Coin inhibit relay | ✅ active-HIGH module on the NC contact; clicks correctly, holds through boot |
 | Motor noise | ✅ 0 pulses discarded |
