@@ -1,0 +1,6 @@
+# Binaries: no line-ending conversion, no text diff (protects the PDF from
+# being corrupted by autocrlf on checkout).
+*.pdf binary
+*.bin binary
+*.elf binary
+*.hex binary
