@@ -2176,7 +2176,12 @@ void creditPromptLine(char *buf, size_t n, uint32_t now)
     return;
   }
 
-  uint32_t elapsed = now - lastCoinMs;
+  // sinceMs(), not (now - lastCoinMs): bankCoin() stamps lastCoinMs with
+  // millis(), which can be a hair ahead of the loop's `now`. A raw subtraction
+  // would then wrap to ~4.29 billion and flash "0:00" for a frame. The banner
+  // after a coin happens to keep this off that pass today, but the house rule
+  // is to never write (now - stamp) directly — so it does not.
+  uint32_t elapsed = sinceMs(now, lastCoinMs);
   uint32_t leftMs = (elapsed >= CREDIT_TIMEOUT_MS) ? 0 : (CREDIT_TIMEOUT_MS - elapsed);
   uint32_t secs = (leftMs + 999) / 1000; // round up, so it never shows 0:00 early
   snprintf(buf, n, "TIME LEFT %lu:%02lu",
