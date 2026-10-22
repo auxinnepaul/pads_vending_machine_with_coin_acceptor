@@ -11,15 +11,19 @@ compiles is not a thing that works.
 
 # ▶ RESUME HERE
 
-**State as of 2026-10-07.** The sale flow (slot shut during a sale, the new
-screens) is verified on the board. Earlier state as of 2026-10-01, end of day: Everything is committed and pushed
-(`d125a1d`); the board runs exactly that build plus the local
-`service_contact.h`.
+**State as of 2026-10-22.** Assembled in the box; TVS and the GPIO 27
+pull-down fitted; six days' unbroken uptime with flat heap; and the coil fed
+its first real pads (2 of 2 present). The one open item is the full
+soak — a bigger stack of pads to prove the coil and set the real dispense
+timeout. Committed and pushed through `ba7f594`; the board runs that plus the
+local `service_contact.h`.
 
 ### ⚡ Switch the 12 V off before plugging or unplugging the coin acceptor
 
-The PC817 protects the ESP32 from the coin line. The TVS for the 12 V rail is
-**not bought yet**, so the buck is still exposed to the worst spikes.
+The PC817 protects the ESP32 from the coin line, and the P6KE15CA TVS is now
+fitted at the 12 V block, so the buck is protected too. Switching the 12 V off
+before plugging the acceptor is no longer strictly required, but stays good
+practice.
 
 **Wiring as built: `WIRING.md`.** **Lessons so far: `LESSONS_LEARNED.md`.**
 
@@ -58,7 +62,7 @@ is **mechanical**: a chute, real pads, and the soak.
 
 | | Blocked on |
 |---|---|
-| **TVS on the 12 V block** | Not bought. P6KE15A, band to +12 V |
+| **TVS on the 12 V block** | ✅ P6KE15CA fitted 2026-10-22 (bidirectional) |
 | **Real drop times** | No chute. Every timing so far is a finger at the IR sensor |
 | **`DISPENSE_TIMEOUT_MS`** | **7000 ms placeholder.** Run `T25` down a real chute, set twice the slowest |
 | **Do pads feed off the coil without jamming** | The number one risk in the whole project, still entirely open |
@@ -80,16 +84,65 @@ bench 2026-10-01: the number held on the top line throughout the fault.
 
 **At commissioning:** go through "Questions for Rebecca at commissioning" at the top of `IMPROVEMENTS_BACKLOG.md`, then set the firmware to her answers.
 
-0. **Buy and fit a 1 MΩ pull-down on GPIO 27** (100 kΩ was tried and removed: 2.01 V clear). Check ≥ 2.8 V clear, ~0 V unplugged. Everything works with the sensor connected; without it, an unplugged sensor is caught only if GPIO 27 floats LOW (it did on this board). The one money risk is a floating pin flickering during a vend and faking a pad drop.
+0. ~~Fit the 1 MΩ pull-down on GPIO 27~~ ✅ 2026-10-22. ~~Buy the TVS~~ ✅ P6KE15CA fitted.
 1. **Build the chute and load the coil with real pads.**
 2. **`T25`**: read `SLOWEST`, set `DISPENSE_TIMEOUT_MS` to twice that, reflash.
 3. **The 50-cycle soak** — the number the client asked for.
-4. Buy and fit the TVS. (Relay-module and LCD decoupling not needed: both are within a few cm of the buck's output caps, and the relay/stock-switch coupling is handled by the guard, verified.)
+4. ~~Buy and fit the TVS~~ ✅ P6KE15CA fitted 2026-10-22.
 5. Decide `k`/`l`/`L`.
 
 **Flashing on another computer:** create `service_contact.h` from
 `service_contact.example.h` first, or the fault screen shows the placeholder.
 The number is deliberately not in git.
+
+---
+
+## 2026-10-22 — In the box: TVS and pull-down fitted, 6-day run, first real pads
+
+**Status: ✅ milestones, ⏳ full soak still pending (short of pads).**
+
+Everything is assembled in the box.
+
+**Fitted since the last session:**
+- **P6KE15CA** TVS at the 12 V terminal block. The "C" is the bidirectional
+  version — clamps both polarities, no band to fit the wrong way — and fine
+  here (12.8 V standoff on a 12 V rail).
+- **1 MΩ** pull-down on GPIO 27 (the 100 kΩ was too strong; see 2026-10-08).
+
+**A six-day continuous run** (uptime 537,935 s): free heap flat at 306,880
+(no leak), motor noise 0, loop max ~249 ms (the coin-finish pass, under the
+300 ms flag). The watchdog `H` test was re-run on the assembled unit and
+recovered: `task watchdog` → `SELF-TEST: PASS`. Buzzer cold and chirps.
+
+**First real pads off the coil (the project's #1 open risk):**
+```
+T25 soak, pads loaded:
+  #1  delivered in 1950 ms
+  #2  delivered in 1038 ms
+  #3..#5  NO PAD  -> auto-stopped (3 misses = empty coil)
+```
+Only two pads were on hand, so the "2 of 5 / 60% no pad" is the **empty coil,
+not a feed failure**. Every cycle with a pad present fed and dropped: **2 of
+2**, no misfeed, no jam. A single advance is ~1–2 s.
+
+**Dispense timeout left at 7000 ms.** The soak recommended 4000 (2 × 1950),
+but that is from only two drops. 7000 is safe (real drops are 1–2 s) and the
+only cost of leaving it high is a few extra seconds before a genuine jam is
+declared. Set the real value from a 25–50 pad soak, which is also the
+acceptance test for the coil and the number the client asked for.
+
+**Coil loading note (builder's observation).** The spiral has ~8 slots and
+drops the *front* pad per rotation (~1–2 s), so a single dispense is fast
+whatever the fill. A pad loaded at the *far* end with empty slots ahead has to
+be wound all the way forward, which exceeds the 7 s timeout — but that only
+happens when the front slots are empty. **Load full from the dropping side**
+and every dispense is a quick single advance. Do **not** raise the timeout to
+cover far-end loading. Watch, during the full soak, that the stock switch
+reads EMPTY while a few pads still sit in the front slots, so the machine is
+never asked to dispense the last pad from the far end.
+
+**Next:** get a stack of pads, run `T25` (then `T50`), set
+`DISPENSE_TIMEOUT_MS` to twice the true worst drop, flash.
 
 ---
 
