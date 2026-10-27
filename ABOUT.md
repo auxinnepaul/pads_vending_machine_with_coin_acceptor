@@ -33,9 +33,9 @@ that pushes a single pad down a chute to her. It accepts **KSh 5, 10, 20 and
 40** coins, shows clear instructions on a screen, and is looked after by a
 caretaker who refills the pads and empties the coin box.
 
-It is deliberately simple and **cheap to build from parts available in any
-Nairobi electronics shop** — about **KSh 9,000 (≈ USD 65)** in components — so
-it can be made and maintained locally, not imported.
+It is deliberately simple and built from parts that are available locally in
+any Nairobi electronics shop, so it can be made and maintained in Kenya rather
+than imported.
 
 ## How it works
 
