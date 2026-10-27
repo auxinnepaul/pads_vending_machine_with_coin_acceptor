@@ -3,6 +3,14 @@
 Bricapa Technologies · Client: Rebecca Mpiima · Ref `BT-PADVEND-2026-001`
 Firmware **v2.0**
 
+> ### 👋 New here? **Start with [`ABOUT.md`](ABOUT.md).**
+> It explains in plain language what this project is, the problem it solves,
+> how the machine works, where it stands today, and the 12-month roadmap — the
+> single page to read first. For using the machine, see
+> [`OPERATING_MANUAL.md`](OPERATING_MANUAL.md). For the full engineering record,
+> see [`firmware_dev_paperwork/`](firmware_dev_paperwork/README.md). **This
+> README is the technical build guide** (parts, wiring, assembly).
+
 Proof-of-concept firmware. Its only job is to demonstrate that **a coin goes in
 and a pad comes out.** Battery, sleep mode, cabinet and M-Pesa are deliberately
 out of scope for this build.
